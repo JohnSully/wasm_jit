@@ -236,6 +236,7 @@ void JitWriter::GetLocal(uint32_t idx)
 	_PushExpandStack();
 	// mov rax, [rbx+idx]
 	static const uint8_t rgcode[] = { 0x48, 0x8B, 0x83 };
+	idx *= sizeof(uint64_t);
 	SafePushCode(rgcode, _countof(rgcode));
 	SafePushCode(&idx, sizeof(idx));
 }
@@ -561,13 +562,75 @@ void JitWriter::Mul32()
 	SafePushCode(rgcode);
 }
 
+void JitWriter::BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, const std::vector<std::pair<value_type, void*>> &stackBlockTypeAddr, std::vector<std::vector<int32_t*>> &stackVecFixups, std::vector<std::vector<void**>> &stackVecFixupsAbsolute)
+{
+	uint32_t target_count = safe_read_buffer<varuint32>(ppoperand, pcbOperand);
+	std::vector<uint32_t> vectargets;
+	vectargets.reserve(target_count);
+	for (uint32_t itarget = 0; itarget < target_count; ++itarget)
+	{
+		vectargets.push_back(safe_read_buffer<varuint32>(ppoperand, pcbOperand));
+	}
+	uint32_t default_target = safe_read_buffer<varuint32>(ppoperand, pcbOperand);
+
+	// jump to an argument in the table or default
+	//	note: this is a candidate for more optimization but for now we will always make a jump table
+	
+	//	cmp rax, target_count
+	//	jae [default_target]
+	// ;else use table
+	// lea rcx, [rip + table_addr]	// keep the code snippet relocateable
+	// lea rax, [rcx + rax*8]
+	// jmp [rax]
+	// table_addr:
+	//	...
+
+	// cmp rax, target_count
+	static const uint8_t rgcodeCmp[] = { 0x48, 0x3D };
+	SafePushCode(rgcodeCmp);
+	SafePushCode(target_count);
+
+	// jae [default_target delta]
+	static const uint8_t rgcodeJAE_rel32[] = { 0x0F, 0x83 };
+	SafePushCode(rgcodeJAE_rel32);
+	if (stackBlockTypeAddr.at(default_target).second == nullptr)
+	{
+		int32_t delta = -6;	// cause an infinite loop if this is not fixed up
+		(stackVecFixups.rbegin() + default_target)->push_back((int*)m_pexecPlaneCur);
+		SafePushCode(delta);
+	}
+	else
+	{
+		int32_t delta = reinterpret_cast<uint8_t*>(stackBlockTypeAddr[default_target].second) - (m_pexecPlaneCur + 4);
+		SafePushCode(delta);
+	}
+
+	// lea rcx, [rip + table_addr]
+	// lea rax, [rcx + rax*8]
+	// jmp [rax]
+	//table_addr:
+	static const uint8_t rgcode[] = { 0x48, 0x8D, 0x0D, 0x06, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x04, 0xC1, 0xFF, 0x20 };
+	SafePushCode(rgcode);
+
+	// Now write the jump table
+	for (uint32_t target : vectargets)
+	{
+		if (stackBlockTypeAddr.at(target).second == nullptr)
+		{
+			stackVecFixupsAbsolute[target].push_back((void**)m_pexecPlaneCur);
+		}
+		SafePushCode(stackBlockTypeAddr.at(target).second);
+	}
+}
+
 void JitWriter::CompileFn(uint32_t ifn)
 {
 	FunctionCodeEntry *pfnc = g_vecfn_code[ifn - g_vecimports.size()].get();
 	const uint8_t *pop = pfnc->vecbytecode.data();
 	size_t cb = pfnc->vecbytecode.size();
 	std::vector<std::pair<value_type, void*>> stackBlockTypeAddr;
-	std::vector<std::vector<int32_t*>> stackVecFixups;
+	std::vector<std::vector<int32_t*>> stackVecFixupsRelative;
+	std::vector<std::vector<void**>> stackVecFixupsAbsolute;
 
 	reinterpret_cast<void**>(m_pexecPlane)[ifn] = m_pexecPlaneCur;	// set our entry in the vector table
 
@@ -606,7 +669,8 @@ void JitWriter::CompileFn(uint32_t ifn)
 			value_type type = safe_read_buffer<value_type>(&pop, &cb);
 			printf("block\n");
 			stackBlockTypeAddr.push_back(std::make_pair(type, nullptr));	// nullptr means we need to fixup addrs
-			stackVecFixups.push_back(std::vector<int32_t*>());
+			stackVecFixupsRelative.push_back(std::vector<int32_t*>());
+			stackVecFixupsAbsolute.push_back(std::vector<void**>());
 			EnterBlock();
 			break;
 		}
@@ -616,7 +680,8 @@ void JitWriter::CompileFn(uint32_t ifn)
 			value_type type = safe_read_buffer<value_type>(&pop, &cb);
 			printf("loop\n");
 			stackBlockTypeAddr.push_back(std::make_pair(type, m_pexecPlaneCur));
-			stackVecFixups.push_back(std::vector<int32_t*>());
+			stackVecFixupsRelative.push_back(std::vector<int32_t*>());
+			stackVecFixupsAbsolute.push_back(std::vector<void**>());
 			EnterBlock();
 			break;
 		}
@@ -629,7 +694,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			auto &pairBlock = *(stackBlockTypeAddr.rbegin() + depth);
 
 			// leave intermediate blocks (lie that we have a return so we don't do useless stack operations)
-			for (uint32_t idepth = 1; idepth < depth; ++idepth)
+			for (uint32_t idepth = 0; idepth < depth; ++idepth)
 			{
 				LeaveBlock(true);
 			}
@@ -638,7 +703,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			int32_t *pdeltaFix = Jump(pairBlock.second);
 			if (pairBlock.second == nullptr)
 			{
-				stackVecFixups.back().push_back(pdeltaFix);
+				(stackVecFixupsRelative.rbegin() + depth)->push_back(pdeltaFix);
 			}
 			break;
 		}
@@ -651,7 +716,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			
 			int32_t *pdeltaNoJmp = JumpNIf(nullptr);	// skip everything if we won't jump
 			// leave intermediate blocks (lie that we have a return so we don't do useless stack operations)
-			for (uint32_t idepth = 1; idepth < depth; ++idepth)
+			for (uint32_t idepth = 0; idepth < depth; ++idepth)
 			{
 				LeaveBlock(true);
 			}
@@ -660,14 +725,14 @@ void JitWriter::CompileFn(uint32_t ifn)
 			int32_t *pdeltaFix = Jump(pairBlock.second);
 			if (pairBlock.second == nullptr)
 			{
-				stackVecFixups.back().push_back(pdeltaFix);
+				stackVecFixupsRelative.back().push_back(pdeltaFix);
 			}
 			*pdeltaNoJmp = m_pexecPlaneCur - (reinterpret_cast<uint8_t*>(pdeltaNoJmp) + sizeof(*pdeltaNoJmp));
 			break;
 		}
 		case opcode::br_table:
 		{
-			Verify(false);	// NYI
+			BranchTableParse(&pop, &cb, stackBlockTypeAddr, stackVecFixupsRelative, stackVecFixupsAbsolute);
 			break;
 		}
 
@@ -947,12 +1012,18 @@ void JitWriter::CompileFn(uint32_t ifn)
 				break;
 			LeaveBlock(stackBlockTypeAddr.back().first != value_type::empty_block);
 			// Jump targets are after the LeaveBlock because the branch already performs the work (TODO: Maybe not do that?)
-			for (int32_t *poffsetFix : stackVecFixups.back())
+			for (int32_t *poffsetFix : stackVecFixupsRelative.back())
 			{
 				*poffsetFix = m_pexecPlaneCur - (reinterpret_cast<uint8_t*>(poffsetFix) + sizeof(*poffsetFix));
 			}
+			for (void **pp : stackVecFixupsAbsolute.back())
+			{
+				*pp = m_pexecPlaneCur;
+			}
+
 			stackBlockTypeAddr.pop_back();
-			stackVecFixups.pop_back();
+			stackVecFixupsRelative.pop_back();
+			stackVecFixupsAbsolute.pop_back();
 			break;
 			
 		default:

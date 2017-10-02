@@ -95,6 +95,7 @@ private:
 	void CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCallee, bool fReturnValue);
 	void FnEpilogue();
 	void FnPrologue(uint32_t clocals, uint32_t cargs);
+	void BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, const std::vector<std::pair<value_type, void*>> &stackBlockTypeAddr, std::vector<std::vector<int32_t*>> &stackVecFixups, std::vector<std::vector<void**>> &stackVecFixupsAbsolute);
 
 	void EnterBlock();
 	void LeaveBlock(bool fHasReturn);
