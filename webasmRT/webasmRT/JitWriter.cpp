@@ -12,6 +12,13 @@ extern std::vector<export_entry> g_vecexports;
 extern std::vector<FunctionCodeEntry::unique_pfne_ptr> g_vecfn_code;
 extern std::vector<uint8_t> g_vecmem;
 extern std::vector<int> g_vecimports;
+struct GlobalVar
+{
+	uint64_t val;
+	value_type type;
+	bool fMutable;
+};
+extern std::vector<GlobalVar> g_vecglbls;
 
 void JitWriter::SafePushCode(const void *pv, size_t cb)
 {
@@ -50,8 +57,8 @@ void JitWriter::_LoadMem32(uint32_t offset)
 void JitWriter::_SetMem32(uint32_t offset)
 {
 	_PopSecondParam();
-	// mov [rsi+rcx+offset], eax	{ 0x89, 0x84, 0x06, [4 byte offset] }
-	static const uint8_t rgcode[] = { 0x89, 0x84, 0x06 };
+	// mov [rsi+rcx+offset], eax	{ 0x89, 0x84, 0x0E, [4 byte offset] }
+	static const uint8_t rgcode[] = { 0x89, 0x84, 0x0E };
 	SafePushCode(rgcode, _countof(rgcode));
 	SafePushCode(&offset, sizeof(offset));
 }
@@ -147,7 +154,7 @@ void JitWriter::StoreMem8(uint32_t offset)
 
 void JitWriter::Sub32()
 {
-	_PopSecondParam();
+	_PopSecondParam(true);
 	// sub eax, ecx
 	static const uint8_t rgcode[] = { 0x29, 0xC8 };
 	SafePushCode(rgcode, _countof(rgcode));
@@ -906,6 +913,28 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("tee_local $%X\n", idx);
 			Verify(idx < clocals);
 			SetLocal(idx, false /*fPop*/);
+			break;
+		}
+		case opcode::get_global:
+		{
+			uint32_t iglbl = safe_read_buffer<varuint32>(&pop, &cb);
+			printf("get_global $%X\n", iglbl);
+			auto &glbl = g_vecglbls.at(iglbl);
+			if (glbl.fMutable)
+			{
+				Verify(false);	// NYI
+			}
+			else
+			{
+				switch (glbl.type)
+				{
+				case value_type::i32:
+					PushC32((uint32_t)glbl.val);
+					break;
+				default:
+					Verify(false);
+				}
+			}
 			break;
 		}
 

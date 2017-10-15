@@ -120,6 +120,7 @@ enum class opcode : uint8_t
 	get_local = 0x20,
 	set_local = 0x21,
 	tee_local = 0x22,
+	get_global = 0x23,
 
 	i32_load =     0x28,
 	i32_load8_u =  0x2d,

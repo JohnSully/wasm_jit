@@ -17,6 +17,13 @@ std::vector<int> g_vecimports;
 std::vector<export_entry> g_vecexports;
 std::vector<FunctionCodeEntry::unique_pfne_ptr> g_vecfn_code;
 std::vector<uint8_t> g_vecmem;
+struct GlobalVar
+{
+	uint64_t val;
+	value_type type;
+	bool fMutable;
+};
+std::vector<GlobalVar> g_vecglbls;
 
 void load_fn_type(const uint8_t **prgbPayload, size_t *pcbData)
 {
@@ -176,6 +183,14 @@ void load_imports(const uint8_t *rgbPayload, size_t cbData)
 
 		switch (kind)
 		{
+		case external_kind::Global:
+		{
+			value_type type = safe_read_buffer<value_type>(&rgbPayload, &cbData);
+			uint8_t fMutable = safe_read_buffer<uint8_t>(&rgbPayload, &cbData);
+			g_vecglbls.push_back({ 0, type, !!fMutable });
+			break;
+		}
+
 		case external_kind::Function:
 		{
 			uint32_t ifnType = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
@@ -240,6 +255,12 @@ void load_data(const uint8_t *rgbPayload, size_t cbData)
 
 		// Double verify to look for wrapping
 		Verify(offset <= g_vecmem.size());
+		
+		if (offset + cb > g_vecmem.size())
+		{
+			g_vecmem.resize(offset + cb);
+		}
+		
 		Verify((offset + cb) <= g_vecmem.size());
 
 		safe_copy_buffer(g_vecmem.data() + offset, cb, &rgbPayload, &cbData);
@@ -252,17 +273,22 @@ void InitializeMemory()
 {
 	// find out memory export
 	int idxMem = -1;
+	bool fFound = false;
 	for (auto &exp : g_vecexports)
 	{
 		if (exp.strName == "memory")
 		{
 			Verify(idxMem == -1, "Only one memory export may be defined");
+			fFound = true;
 			idxMem = exp.index;
 		}
 	}
 
-	Verify(idxMem >= 0 && idxMem < g_vecmem_types.size(), "Invalid memory export");
-	g_vecmem.resize(g_vecmem_types[idxMem].initial_size * WASM_PAGE_SIZE);
+	if (fFound)
+	{
+		Verify(idxMem >= 0 && idxMem < g_vecmem_types.size(), "Invalid memory export");
+		g_vecmem.resize(g_vecmem_types[idxMem].initial_size * WASM_PAGE_SIZE);
+	}
 }
 
 
