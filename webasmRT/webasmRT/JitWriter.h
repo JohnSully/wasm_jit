@@ -3,11 +3,7 @@
 class JitWriter
 {
 public:
-	JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn)
-		: m_pexecPlane(pexecPlane), m_pexecPlaneCur(pexecPlane), m_pexecPlaneMax(pexecPlane + cbExec), m_cfn(cfn)
-	{
-		m_pexecPlaneCur += sizeof(void*) * cfn;	// allocate the function table, ensuring its within 32-bits of all our code
-	}
+	JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls);
 
 	void CompileFn(uint32_t ifn);
 
@@ -79,12 +75,15 @@ private:
 	void Add32();
 	void Mul32();
 	void Add64();
+	void Mul64();
 	void Div64();
 	void Popcnt32();
 	void PushC32(uint32_t c);
 	void PushC64(uint64_t c);
 	void SetLocal(uint32_t idx, bool fPop);
 	void GetLocal(uint32_t idx);
+	void GetGlobal(uint32_t idx);
+	void SetGlobal(uint32_t idx);
 	void Select();
 	void Compare(CompareType type, bool fSigned, bool f64);
 	void Eqz32();
@@ -100,8 +99,14 @@ private:
 	void EnterBlock();
 	void LeaveBlock(bool fHasReturn);
 
-	uint8_t *m_pexecPlane;
-	uint8_t *m_pexecPlaneCur;
-	uint8_t *m_pexecPlaneMax;
+	void ProtectForRuntime();
+	void UnprotectRuntime();
+
+	uint8_t *m_pexecPlane = nullptr;
+	uint8_t *m_pcodeStart = nullptr;
+	uint8_t *m_pexecPlaneCur = nullptr;
+	uint8_t *m_pexecPlaneMax = nullptr;
+	uint64_t *m_pGlobalsStart = nullptr;
+	void *m_pheap = nullptr;
 	size_t m_cfn;
 };

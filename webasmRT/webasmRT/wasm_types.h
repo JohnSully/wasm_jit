@@ -23,6 +23,13 @@ struct varuintT
 		return *this;
 	}
 
+	template<typename TT>
+	varuintT &operator-=(TT other)
+	{
+		val -= other;
+		return *this;
+	}
+
 	T val;
 };
 
@@ -41,9 +48,16 @@ struct varint32
 		return val;
 	}
 
-	varint32 operator|=(int32_t other)
+	varint32 &operator|=(int32_t other)
 	{
 		val |= other;
+		return *this;
+	}
+
+	template<typename T>
+	varint32 &operator-=(T other)
+	{
+		val -= other;
 		return *this;
 	}
 
@@ -121,6 +135,7 @@ enum class opcode : uint8_t
 	set_local = 0x21,
 	tee_local = 0x22,
 	get_global = 0x23,
+	set_global = 0x24,
 
 	i32_load =     0x28,
 	i32_load8_u =  0x2d,
@@ -163,10 +178,12 @@ enum class opcode : uint8_t
 	i32_shr_u = 0x76,
 
 	i64_add = 0x7c,
+	i64_mul = 0x7e,
 	i64_div_u = 0x80,
 	i64_and = 0x83,
 	i64_or = 0x84,
 	i64_shl = 0x86,
+	i64_shr_u = 0x88,
 
 	i32_wrap_i64 = 0xa7,
 	i64_extend_u32 = 0xad,

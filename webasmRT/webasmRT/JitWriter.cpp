@@ -3,6 +3,7 @@
 #include "Exceptions.h"
 #include "safe_access.h"
 #include "JitWriter.h"
+#include <Windows.h>
 
 extern std::vector<FunctionTypeEntry::unique_pfne_ptr> g_vecfn_types;
 extern std::vector<uint32_t> g_vecfn_entries;
@@ -19,6 +20,20 @@ struct GlobalVar
 	bool fMutable;
 };
 extern std::vector<GlobalVar> g_vecglbls;
+
+JitWriter::JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls)
+	: m_pexecPlane(pexecPlane), m_pexecPlaneCur(pexecPlane), m_pexecPlaneMax(pexecPlane + cbExec), m_cfn(cfn)
+{
+	uint8_t *pvZeroStart = m_pexecPlaneCur;
+	m_pexecPlaneCur += sizeof(void*) * cfn;	// allocate the function table, ensuring its within 32-bits of all our code
+
+	m_pexecPlaneCur += (4096 - reinterpret_cast<uint64_t>(m_pexecPlaneCur)) % 4096;
+	m_pGlobalsStart = (uint64_t*)m_pexecPlaneCur;
+	m_pexecPlaneCur += (sizeof(uint64_t) * cglbls);
+	m_pexecPlaneCur += (4096 - reinterpret_cast<uint64_t>(m_pexecPlaneCur)) % 4096;
+	m_pcodeStart = m_pexecPlaneCur;
+	memset(pvZeroStart, 0, m_pexecPlaneCur - pvZeroStart);	// these areas should be initialized to zero
+}
 
 void JitWriter::SafePushCode(const void *pv, size_t cb)
 {
@@ -48,19 +63,25 @@ void JitWriter::_PopContractStack()
 
 void JitWriter::_LoadMem32(uint32_t offset)
 {
-	// mov eax, [rsi+rax+offset]	{ 0x8B, 0x84, 0x06, [4 byte offset] }
-	static const uint8_t rgcode[] = { 0x8B, 0x84, 0x06 };
+	// add eax, offset	; note this implicitly ands with 0xffffffff ensuring that when referenced as rax it will always be a positive number between 0 and 2^32 - 1
+	static const uint8_t rgcodeAdd[] = { 0x05 };
+	SafePushCode(rgcodeAdd);
+	SafePushCode(offset);
+	// mov eax, [rsi+rax]	{ 0x8B, 0x04, 0x06 }
+	static const uint8_t rgcode[] = { 0x8B, 0x04, 0x06 };
 	SafePushCode(rgcode, _countof(rgcode));
-	SafePushCode(&offset, sizeof(offset));
 }
 
 void JitWriter::_SetMem32(uint32_t offset)
 {
 	_PopSecondParam();
-	// mov [rsi+rcx+offset], eax	{ 0x89, 0x84, 0x0E, [4 byte offset] }
-	static const uint8_t rgcode[] = { 0x89, 0x84, 0x0E };
+	// add ecx, offset	; note this implicitly ands with 0xffffffff ensuring that when referenced as rax it will always be a positive number between 0 and 2^32 - 1
+	static const uint8_t rgcodeAdd[] = {0x81, 0xC1 };
+	SafePushCode(rgcodeAdd);
+	SafePushCode(offset);
+	// mov [rsi+rcx], eax	{ 0x89, 0x04, 0x0E }
+	static const uint8_t rgcode[] = { 0x89, 0x04, 0x0E };
 	SafePushCode(rgcode, _countof(rgcode));
-	SafePushCode(&offset, sizeof(offset));
 }
 
 void JitWriter::_PopSecondParam(bool fSwapParams)
@@ -569,6 +590,16 @@ void JitWriter::Mul32()
 	SafePushCode(rgcode);
 }
 
+
+void JitWriter::Mul64()
+{
+	// mul qword ptr [rdi-8]		; note: clobbers rdx
+	// sub rdi, 8
+	static const uint8_t rgcode[] = { 0x48, 0xF7, 0x67, 0xF8, 0x48, 0x83, 0xEF, 0x08 };
+	SafePushCode(rgcode);
+}
+
+
 void JitWriter::BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, const std::vector<std::pair<value_type, void*>> &stackBlockTypeAddr, std::vector<std::vector<int32_t*>> &stackVecFixups, std::vector<std::vector<void**>> &stackVecFixupsAbsolute)
 {
 	uint32_t target_count = safe_read_buffer<varuint32>(ppoperand, pcbOperand);
@@ -630,8 +661,66 @@ void JitWriter::BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, 
 	}
 }
 
+void JitWriter::GetGlobal(uint32_t idx)
+{
+	auto &glbl = g_vecglbls.at(idx);
+
+	if (glbl.fMutable)
+	{
+		_PushExpandStack();
+		const char *szCode = nullptr;
+		switch (glbl.type)
+		{
+		case value_type::i32:
+			// mov eax, [m_pGlobalsStart + idx*8] (rip relative)
+			szCode = "\x8B\x05";
+			break;
+
+		default:
+			Verify(false);
+		}
+		SafePushCode(szCode, strlen(szCode));
+		// now push the address offset
+		int32_t offset = reinterpret_cast<uint8_t*>(m_pGlobalsStart + idx) - (m_pexecPlaneCur + 4);
+		SafePushCode(offset);
+	}
+	else
+	{
+		switch (glbl.type)
+		{
+		case value_type::i32:
+			PushC32((uint32_t)glbl.val);
+			break;
+		default:
+			Verify(false);
+		}
+	}
+}
+
+void JitWriter::SetGlobal(uint32_t idx)
+{
+	auto &glbl = g_vecglbls.at(idx);
+
+	Verify(glbl.fMutable);
+	const char *szCode = nullptr;
+	switch (glbl.type)
+	{
+	case value_type::i32:
+		szCode = "\x89\x05";
+		break;
+
+	default:
+		Verify(false);
+	}
+	SafePushCode(szCode, strlen(szCode));
+	int32_t offset = reinterpret_cast<uint8_t*>(m_pGlobalsStart + idx) - (m_pexecPlaneCur + 4);
+	SafePushCode(offset);
+	_PopContractStack();
+}
+
 void JitWriter::CompileFn(uint32_t ifn)
 {
+	size_t cfnImports = 0;
 	FunctionCodeEntry *pfnc = g_vecfn_code[ifn - g_vecimports.size()].get();
 	const uint8_t *pop = pfnc->vecbytecode.data();
 	size_t cb = pfnc->vecbytecode.size();
@@ -732,7 +821,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			int32_t *pdeltaFix = Jump(pairBlock.second);
 			if (pairBlock.second == nullptr)
 			{
-				stackVecFixupsRelative.back().push_back(pdeltaFix);
+				(stackVecFixupsRelative.rbegin() + depth)->push_back(pdeltaFix);
 			}
 			*pdeltaNoJmp = m_pexecPlaneCur - (reinterpret_cast<uint8_t*>(pdeltaNoJmp) + sizeof(*pdeltaNoJmp));
 			break;
@@ -746,6 +835,11 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::ret:
 		{
 			printf("return\n");
+			// add rsp, (cblock * 8)
+			static const uint8_t rgcode[] = { 0x48, 0x81, 0xC4 };
+			int32_t cbSub = stackVecFixupsRelative.size() * 8;
+			SafePushCode(rgcode);
+			SafePushCode(cbSub);
 			FnEpilogue();
 			break;
 		}
@@ -919,22 +1013,14 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t iglbl = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("get_global $%X\n", iglbl);
-			auto &glbl = g_vecglbls.at(iglbl);
-			if (glbl.fMutable)
-			{
-				Verify(false);	// NYI
-			}
-			else
-			{
-				switch (glbl.type)
-				{
-				case value_type::i32:
-					PushC32((uint32_t)glbl.val);
-					break;
-				default:
-					Verify(false);
-				}
-			}
+			GetGlobal(iglbl);
+			break;
+		}
+		case opcode::set_global:
+		{
+			uint32_t iglbl = safe_read_buffer<varuint32>(&pop, &cb);
+			printf("set_global $%X\n", iglbl);
+			SetGlobal(iglbl);
 			break;
 		}
 
@@ -1010,6 +1096,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("i64.add\n");
 			Add64();
 			break;
+		case opcode::i64_mul:
+			printf("i64.mul\n");
+			Mul64();
+			break;
 		case opcode::i64_div_u:
 			printf("i64.div_u\n");
 			Div64();
@@ -1025,6 +1115,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::i64_shl:
 			printf("i64.shl\n");
 			LogicOp64(LogicOperation::ShiftLeft);
+			break;
+		case opcode::i64_shr_u:
+			printf("i64.shr_u\n");
+			LogicOp64(LogicOperation::ShiftRightUnsigned);
 			break;
 
 		case opcode::i32_wrap_i64:
@@ -1075,6 +1169,20 @@ void JitWriter::CompileFn(uint32_t ifn)
 
 extern "C" uint64_t ExternCallFnASM(void *pfn, void *operandStack, void *localsStack, void *memoryBase);
 
+
+void JitWriter::ProtectForRuntime()
+{
+	DWORD dwT;
+	Verify(VirtualProtect(m_pexecPlane, (uint8_t*)m_pGlobalsStart - m_pexecPlane, PAGE_READONLY, &dwT));
+	Verify(VirtualProtect(m_pcodeStart, m_pexecPlaneCur - m_pcodeStart, PAGE_EXECUTE_READ, &dwT));
+}
+
+void JitWriter::UnprotectRuntime()
+{
+	DWORD dwT;
+	Verify(VirtualProtect(m_pexecPlane, (uint8_t*)m_pGlobalsStart - m_pexecPlane, PAGE_READWRITE, &dwT));
+	Verify(VirtualProtect(m_pcodeStart, m_pexecPlaneCur - m_pcodeStart, PAGE_READWRITE, &dwT));
+}
 void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
 {
 	uint64_t retV;
@@ -1085,8 +1193,19 @@ void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
 	}
 	std::vector<uint64_t> vecoperand;
 	std::vector<uint64_t> veclocals;
-	vecoperand.resize(4096);
-	veclocals.resize(4096);
+	vecoperand.resize(4096*1000);
+	veclocals.resize(4096*1000);
 	Verify(pfn != nullptr);
-	retV = ExternCallFnASM(pfn, vecoperand.data(), veclocals.data(), g_vecmem.data());
+	if (m_pheap == nullptr)
+	{
+		// Reserve 8GB of memory for our heap plane, this is 2^33 because effective addresses can compute to 33 bits (even though we actually truncate to 32 we reserve the max to prevent security flaws if we truncate incorrectly)
+		m_pheap = VirtualAlloc(nullptr, 0x200000000, MEM_RESERVE, PAGE_NOACCESS);
+		Verify(VirtualAlloc(m_pheap, 0x100000000, MEM_COMMIT, PAGE_READWRITE) != nullptr);
+		Verify(g_vecmem.size() < 0x100000000);
+		memcpy(m_pheap, g_vecmem.data(), g_vecmem.size());
+	}
+
+	ProtectForRuntime();
+	retV = ExternCallFnASM(pfn, vecoperand.data(), veclocals.data(), m_pheap);
+	UnprotectRuntime();
 }

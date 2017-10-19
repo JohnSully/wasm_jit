@@ -119,6 +119,25 @@ void load_memory(const uint8_t *rgbPayload, size_t cbData)
 	Verify(cbData == 0);
 }
 
+void load_globals(const uint8_t *rgbPayload, size_t cbData)
+{
+	uint32_t cglobals = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
+	ExpressionService exprsvc;
+	while (cglobals > 0)
+	{
+		value_type type = safe_read_buffer<value_type>(&rgbPayload, &cbData);
+		bool fMutable = !!safe_read_buffer<uint8_t>(&rgbPayload, &cbData);
+		
+		ExpressionService::Variant variant;
+		size_t cbExpr = exprsvc.CbEatExpression(rgbPayload, cbData, &variant);
+		rgbPayload += cbExpr;
+		cbData -= cbExpr;
+		g_vecglbls.push_back({ variant.val, type, fMutable });
+		--cglobals;
+	}
+	Verify(cbData == 0);
+}
+
 void load_exports(const uint8_t *rgbPayload, size_t cbData)
 {
 	varuint32 var32cexp = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
@@ -179,7 +198,6 @@ void load_imports(const uint8_t *rgbPayload, size_t cbData)
 		vecrgchField.resize(field_len);
 		safe_copy_buffer(vecrgchField.data(), field_len, &rgbPayload, &cbData);
 		external_kind kind = safe_read_buffer<external_kind>(&rgbPayload, &cbData);
-		g_vecimports.push_back(0);	// for now just place hold
 
 		switch (kind)
 		{
@@ -187,12 +205,14 @@ void load_imports(const uint8_t *rgbPayload, size_t cbData)
 		{
 			value_type type = safe_read_buffer<value_type>(&rgbPayload, &cbData);
 			uint8_t fMutable = safe_read_buffer<uint8_t>(&rgbPayload, &cbData);
+			Verify(!fMutable);	// wasm spec says these must always be immutable
 			g_vecglbls.push_back({ 0, type, !!fMutable });
 			break;
 		}
 
 		case external_kind::Function:
 		{
+			g_vecimports.push_back(0);	// for now just place hold
 			uint32_t ifnType = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
 			g_vecfn_entries.push_back(ifnType);
 			Verify(g_vecfn_entries.back() < g_vecfn_types.size());
@@ -304,9 +324,12 @@ bool load_section(FILE *pf)
 		if ((int)header.id == 0)
 		{
 			varuint32 name_len;
+			auto cbStart = ftell(pf);
 			fread_struct(&name_len, pf);
 			vecrgchName.resize(name_len);
 			fread_struct(vecrgchName.data(), pf, name_len);
+			auto cbEnd = ftell(pf);
+			header.payload_len -= (cbEnd - cbStart);
 		}
 		vecpayload.resize(header.payload_len);
 		fread_struct(vecpayload.data(), pf, header.payload_len);
@@ -337,6 +360,9 @@ bool load_section(FILE *pf)
 	case section_types::Memory:
 		load_memory(vecpayload.data(), vecpayload.size());
 		break;
+	case section_types::Global:
+		load_globals(vecpayload.data(), vecpayload.size());
+		break;
 	case section_types::Export:
 		load_exports(vecpayload.data(), vecpayload.size());
 		InitializeMemory();
@@ -357,156 +383,6 @@ bool load_section(FILE *pf)
 	return true;
 }
 
-uint64_t ExecuteFunction(uint32_t ifn, uint64_t *args = nullptr)
-{
-	FunctionCodeEntry *pfnc = g_vecfn_code[ifn].get();
-	const uint8_t *pop = pfnc->vecbytecode.data();
-	size_t cb = pfnc->vecbytecode.size();
-	std::vector<uint64_t> paramStack;
-	std::vector<uint64_t> locals;
-	std::stack<std::tuple<block_type, size_t>> stackBlock;
-	uint64_t ret = 0;
-
-	size_t cparams = g_vecfn_types[ifn]->cparams;
-	for (size_t iparam = 0; iparam < cparams; ++iparam)
-	{
-		locals.push_back(args[iparam]);
-	}
-	for (size_t ilocal = 0; ilocal < pfnc->clocalVars; ++ilocal)
-	{
-		locals.resize(locals.size() + pfnc->rglocals[ilocal].count);
-	}
-
-	while (cb > 0)
-	{
-		cb--;	// count *pop
-		++pop;
-		switch ((opcode)*(pop-1))
-		{
-		case opcode::block:
-		{
-			uint8_t type = safe_read_buffer<block_type>(&pop, &cb);
-			stackBlock.push(std::make_tuple(type, locals.size()));
-			break;
-		}
-		case opcode::br_if:
-		{
-			uint32_t depth = safe_read_buffer<varuint32>(&pop, &cb);
-			if (paramStack.back())
-			{
-				size_t stackSize = 0;
-				do
-				{
-					stackSize = std::get<1>(stackBlock.top());
-					stackBlock.pop();
-					if (depth > 0)
-						--depth;
-				} while (depth > 0);
-				Verify(false);
-			}
-			paramStack.erase(paramStack.begin() + (paramStack.size() - 1));
-			break;
-		}
-
-		case opcode::call:
-		{
-			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
-			auto ptype = g_vecfn_types.at(idx).get();
-			uint64_t ret = ExecuteFunction(idx, paramStack.data() + (paramStack.size() - ptype->cparams));
-			if (ptype->fHasReturnValue)
-				paramStack.push_back(ret);
-			break;
-		}
-
-		case opcode::get_local:
-		{
-			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
-			paramStack.push_back(locals.at(idx));
-			break;
-		}
-		case opcode::tee_local:
-		{
-			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
-			locals.at(idx) = paramStack.back();
-			break;
-		}
-
-		case opcode::grow_memory:
-		{
-			// skip the reserved byte
-			uint8_t growsize = safe_read_buffer<uint8_t>(&pop, &cb);
-			size_t cb = g_vecmem.size() / WASM_PAGE_SIZE;
-			g_vecmem.resize(g_vecmem.size() + (growsize * WASM_PAGE_SIZE));
-			paramStack.push_back(cb);
-			break;
-		}
-
-		case opcode::i32_const:
-			paramStack.push_back(safe_read_buffer<varint32>(&pop, &cb));
-			break;
-
-		case opcode::i32_ge_s:	// >= (signed)
-		{
-			int32_t a = (int32_t)paramStack.back();
-			paramStack.erase(paramStack.begin() + (paramStack.size() - 1));
-			int32_t b = (int32_t)paramStack.back();
-			paramStack.erase(paramStack.begin() + (paramStack.size() - 1));
-			paramStack.push_back(a >= b);
-			break;
-		}
-
-		case opcode::i32_load:
-		{
-			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
-			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
-			paramStack.push_back(*reinterpret_cast<uint32_t*>(g_vecmem.data() + offset));
-			break;
-		}
-
-		case opcode::i64_load32_s:
-		{
-			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
-			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
-			paramStack.push_back(static_cast<int64_t>(*reinterpret_cast<int32_t*>(g_vecmem.data() + offset)));
-			break;
-		}
-
-		case opcode::i32_store:
-		{
-			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
-			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
-			int32_t val = (int32_t)paramStack.back();
-			paramStack.erase(paramStack.begin() + (paramStack.size() - 1));
-			*reinterpret_cast<uint32_t*>(g_vecmem.data() + offset) = val;
-			break;
-		}
-		
-		case opcode::i32_sub:
-		{
-			int32_t a = (int32_t)paramStack.back();
-			paramStack.erase(paramStack.begin() + (paramStack.size() - 1));
-			int32_t b = (int32_t)paramStack.back();
-			paramStack.erase(paramStack.begin() + (paramStack.size() - 1));
-			paramStack.push_back(a - b);
-			break;
-		}
-
-		case opcode::end:
-		{
-			if (cb == 0)	// end of function pop's the return value
-			{
-				printf("return value: %ull\n", paramStack.back());
-				paramStack.erase(paramStack.begin() + (paramStack.size() - 1));
-			}
-			break;
-		}
-		default:
-			throw RuntimeException("Invalid opcode");
-		}
-	}
-	return ret;
-}
-
 
 void CallFunction(const char *szName, JitWriter &writer)
 {
@@ -515,7 +391,6 @@ void CallFunction(const char *szName, JitWriter &writer)
 	{
 		if (g_vecexports[iexport].strName == szName)
 		{
-			//ExecuteFunction(g_vecexports[ifn].index);
 			size_t ifn = g_vecexports[iexport].index;
 			writer.ExternCallFn(ifn, g_vecmem.data());
 			fExecuted = true;
@@ -552,9 +427,14 @@ int main(int argc, char *argv[])
 	fclose(pf);
 
 	size_t cbExecPlane = 128 * 4096;
-	uint8_t *rgexec = (uint8_t*)VirtualAlloc(nullptr, cbExecPlane, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-	memset(rgexec, 0, cbExecPlane);
-	JitWriter writer(rgexec, cbExecPlane, g_vecfn_entries.size());
+
+	void *pvStartAddr = nullptr;
+#ifdef _DEBUG
+	pvStartAddr = (void*)0xA0000000000;	// Note we want execution to be at a random address in ship to make exploiting flaws harder, for debug its nice to always be the same
+#endif
+	uint8_t *rgexec = (uint8_t*)VirtualAlloc(pvStartAddr, cbExecPlane, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	memset(rgexec, 0xF4, cbExecPlane);	// fill with hlts (because 00 is effectively a NOP)
+	JitWriter writer(rgexec, cbExecPlane, g_vecfn_entries.size(), g_vecglbls.size());
 
 	CallFunction("main", writer);
     return 0;
