@@ -1,9 +1,10 @@
 #include "stdafx.h"
 #include "Exceptions.h"
 #include "BuiltinFunctions.h"
+#include "ExecutionControlBlock.h"
+#include "JitWriter.h"
+#include "WasmContext.h"
 #include <io.h>
-
-extern std::vector<int> g_vecimports;
 
 bool FEqualProto(const BuiltinExport &builtinexport, const FunctionTypeEntry &fnt)
 {
@@ -42,7 +43,7 @@ uint64_t wasm_write_fd(uint64_t *rgArgs, uint8_t *pvMemBase)
 {
 	int fd = (int)rgArgs[0];
 	const uint8_t *pv = pvMemBase + rgArgs[1];
-	size_t cb = rgArgs[2];
+	uint32_t cb = static_cast<uint32_t>(rgArgs[2]);
 
 	return _write(fd, pv, cb);
 }
@@ -67,12 +68,17 @@ int IBuiltinFromName(const std::string &strName)
 			return ifn;
 	}
 	Verify(false);
+	abort();
 }
 
-extern "C" uint64_t CReentryFn(int ifn, uint64_t *pvArgs, uint8_t *pvMemBase)
+extern "C" uint64_t CReentryFn(int ifn, uint64_t *pvArgs, uint8_t *pvMemBase, ExecutionControlBlock *pecb)
 {
-	Verify(ifn >= 0 && ifn < g_vecimports.size());
-	ifn = g_vecimports[ifn];
+	return pecb->pjitWriter->CReentryFn(ifn, pvArgs, pvMemBase, pecb);
+}
+uint64_t JitWriter::CReentryFn(int ifn, uint64_t *pvArgs, uint8_t *pvMemBase, ExecutionControlBlock *pecb)
+{
+	Verify(ifn >= 0 && ifn < m_pctxt->m_vecimports.size());
+	ifn = m_pctxt->m_vecimports[ifn];
 	Verify(ifn >= 0 && ifn < _countof(BuiltinMap));
 	BuiltinMap[ifn].pfn(pvArgs, pvMemBase);
 	return 0;

@@ -117,6 +117,7 @@ WasmToC PROC
 	
 	mov rdx, rbx	; put the parameter base address in rdx (second arg)
 	mov r8, rsi
+	mov r9, rbp
 	; reserve space on stack
 
 	sub rsp, 32

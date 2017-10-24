@@ -3,30 +3,17 @@
 #include "Exceptions.h"
 #include "safe_access.h"
 #include "JitWriter.h"
+#include "WasmContext.h"
+#include "ExecutionControlBlock.h"
+#include "numeric_cast.h"
 #include <Windows.h>
 
-extern std::vector<FunctionTypeEntry::unique_pfne_ptr> g_vecfn_types;
-extern std::vector<uint32_t> g_vecfn_entries;
-extern std::vector<table_type> g_vectbl;
-extern std::vector<resizable_limits> g_vecmem_types;
-extern std::vector<export_entry> g_vecexports;
-extern std::vector<FunctionCodeEntry::unique_pfne_ptr> g_vecfn_code;
-extern std::vector<uint8_t> g_vecmem;
-extern std::vector<int> g_vecimports;
-extern std::vector<uint32_t> g_vecIndirectFnTable;
-struct GlobalVar
-{
-	uint64_t val;
-	value_type type;
-	bool fMutable;
-};
-extern std::vector<GlobalVar> g_vecglbls;
 extern "C" void WasmToC();
 extern "C" void CallIndirectShim();
 extern "C" void BranchTable();
 
-JitWriter::JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls)
-	: m_pexecPlane(pexecPlane), m_pexecPlaneCur(pexecPlane), m_pexecPlaneMax(pexecPlane + cbExec), m_cfn(cfn)
+JitWriter::JitWriter(WasmContext *pctxt, uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls)
+	: m_pctxt(pctxt), m_pexecPlane(pexecPlane), m_pexecPlaneCur(pexecPlane), m_pexecPlaneMax(pexecPlane + cbExec), m_cfn(cfn)
 {
 	uint8_t *pvZeroStart = m_pexecPlaneCur;
 	m_pexecPlaneCur += sizeof(void*) * cfn;	// allocate the function table, ensuring its within 32-bits of all our code
@@ -42,7 +29,7 @@ JitWriter::JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglb
 	m_pcodeStart = m_pexecPlaneCur;
 	memset(pvZeroStart, 0, m_pexecPlaneCur - pvZeroStart);	// these areas should be initialized to zero
 
-	for (size_t iimportfn = 0; iimportfn < g_vecimports.size(); ++iimportfn)
+	for (size_t iimportfn = 0; iimportfn < m_pctxt->m_vecimports.size(); ++iimportfn)
 		reinterpret_cast<void**>(m_pexecPlane)[iimportfn] = WasmToC;
 	*m_pfnCallIndirectShim = CallIndirectShim;
 	*m_pfnBranchTable = BranchTable;
@@ -436,7 +423,9 @@ int32_t *JitWriter::JumpNIf(void *pvJmp)
 
 	if (pvJmp != nullptr)
 	{
-		offset = reinterpret_cast<uint8_t*>(pvJmp) - (reinterpret_cast<uint8_t*>(m_pexecPlaneCur) + 6);
+		int64_t offset64 = reinterpret_cast<uint8_t*>(pvJmp) - (reinterpret_cast<uint8_t*>(m_pexecPlaneCur) + 6);
+		offset = static_cast<int32_t>(offset64);
+		Verify(offset64 == offset);
 	}
 	// JZ rel32	{ 0x0F, 0x84, REL32 }
 	static const uint8_t rgcodeJRel[] = { 0x0F, 0x84 };
@@ -452,7 +441,9 @@ int32_t *JitWriter::Jump(void *pvJmp)
 	
 	if (pvJmp != nullptr)
 	{
-		offset = reinterpret_cast<uint8_t*>(pvJmp) - (reinterpret_cast<uint8_t*>(m_pexecPlaneCur) + 5);
+		int64_t offset64 = reinterpret_cast<uint8_t*>(pvJmp) - (reinterpret_cast<uint8_t*>(m_pexecPlaneCur) + 5);
+		offset = static_cast<int32_t>(offset64);
+		Verify(offset == offset64);
 	}
 	// JMP rel32	{ 0xE9, REL32 }
 	static const uint8_t rgcodeJRel[] = { 0xE9 };
@@ -508,7 +499,7 @@ void JitWriter::CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCall
 	}
 	else
 	{
-		if (ifn < g_vecimports.size())
+		if (ifn < m_pctxt->m_vecimports.size())
 		{
 			// mov ecx ifn ; so we know the function
 			static const uint8_t rgcodeFnNum[] = { 0xB9 };
@@ -762,7 +753,7 @@ void JitWriter::BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, 
 
 void JitWriter::GetGlobal(uint32_t idx)
 {
-	auto &glbl = g_vecglbls.at(idx);
+	auto &glbl = m_pctxt->m_vecglbls.at(idx);
 
 	if (glbl.fMutable)
 	{
@@ -780,7 +771,9 @@ void JitWriter::GetGlobal(uint32_t idx)
 		}
 		SafePushCode(szCode, strlen(szCode));
 		// now push the address offset
-		int32_t offset = reinterpret_cast<uint8_t*>(m_pGlobalsStart + idx) - (m_pexecPlaneCur + 4);
+		int64_t offset64 = reinterpret_cast<uint8_t*>(m_pGlobalsStart + idx) - (m_pexecPlaneCur + 4);
+		int32_t offset = static_cast<int32_t>(offset64);
+		Verify(offset64 == offset);
 		SafePushCode(offset);
 	}
 	else
@@ -798,7 +791,7 @@ void JitWriter::GetGlobal(uint32_t idx)
 
 void JitWriter::SetGlobal(uint32_t idx)
 {
-	auto &glbl = g_vecglbls.at(idx);
+	auto &glbl = m_pctxt->m_vecglbls.at(idx);
 
 	Verify(glbl.fMutable);
 	const char *szCode = nullptr;
@@ -812,7 +805,9 @@ void JitWriter::SetGlobal(uint32_t idx)
 		Verify(false);
 	}
 	SafePushCode(szCode, strlen(szCode));
-	int32_t offset = reinterpret_cast<uint8_t*>(m_pGlobalsStart + idx) - (m_pexecPlaneCur + 4);
+	int64_t offset64 = reinterpret_cast<uint8_t*>(m_pGlobalsStart + idx) - (m_pexecPlaneCur + 4);
+	int32_t offset = static_cast<int32_t>(offset64);
+	Verify(offset64 == offset);
 	SafePushCode(offset);
 	_PopContractStack();
 }
@@ -828,8 +823,8 @@ void JitWriter::ExtendSigned32_64()
 void JitWriter::CompileFn(uint32_t ifn)
 {
 	size_t cfnImports = 0;
-	Verify(ifn >= g_vecimports.size(), "Attempt to compile an import");
-	FunctionCodeEntry *pfnc = g_vecfn_code[ifn - g_vecimports.size()].get();
+	Verify(ifn >= m_pctxt->m_vecimports.size(), "Attempt to compile an import");
+	FunctionCodeEntry *pfnc = m_pctxt->m_vecfn_code[ifn - m_pctxt->m_vecimports.size()].get();
 	const uint8_t *pop = pfnc->vecbytecode.data();
 	size_t cb = pfnc->vecbytecode.size();
 	std::vector<std::pair<value_type, void*>> stackBlockTypeAddr;
@@ -838,9 +833,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 
 	reinterpret_cast<void**>(m_pexecPlane)[ifn] = m_pexecPlaneCur;	// set our entry in the vector table
 
-	size_t itype = g_vecfn_entries[ifn];
-	size_t cparams = g_vecfn_types[itype]->cparams;
-	size_t clocals = cparams;
+	size_t itype = m_pctxt->m_vecfn_entries[ifn];
+	uint32_t cparams = m_pctxt->m_vecfn_types[itype]->cparams;
+	uint32_t clocals = cparams;
 	for (size_t ilocalInfo = 0; ilocalInfo < pfnc->clocalVars; ++ilocalInfo)
 	{
 		clocals += pfnc->rglocals[ilocalInfo].count;
@@ -851,13 +846,13 @@ void JitWriter::CompileFn(uint32_t ifn)
 	FnPrologue(clocals, cparams);
 
 	const char *szFnName = nullptr;
-	for (size_t iexport = 0; iexport < g_vecexports.size(); ++iexport)
+	for (size_t iexport = 0; iexport < m_pctxt->m_vecexports.size(); ++iexport)
 	{
-		if (g_vecexports[iexport].kind == external_kind::Function)
+		if (m_pctxt->m_vecexports[iexport].kind == external_kind::Function)
 		{
-			if (g_vecexports[iexport].index == ifn)
+			if (m_pctxt->m_vecexports[iexport].index == ifn)
 			{
-				szFnName = g_vecexports[iexport].strName.c_str();
+				szFnName = m_pctxt->m_vecexports[iexport].strName.c_str();
 				break;
 			}
 		}
@@ -948,7 +943,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			{
 				(stackVecFixupsRelative.rbegin() + depth)->push_back(pdeltaFix);
 			}
-			*pdeltaNoJmp = m_pexecPlaneCur - (reinterpret_cast<uint8_t*>(pdeltaNoJmp) + sizeof(*pdeltaNoJmp));
+			*pdeltaNoJmp = numeric_cast<int32_t>(m_pexecPlaneCur - (reinterpret_cast<uint8_t*>(pdeltaNoJmp) + sizeof(*pdeltaNoJmp)));
 			break;
 		}
 		case opcode::br_table:
@@ -963,7 +958,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("return\n");
 			// add rsp, (cblock * 8)
 			static const uint8_t rgcode[] = { 0x48, 0x81, 0xC4 };
-			int32_t cbSub = stackVecFixupsRelative.size() * 8;
+			int32_t cbSub = numeric_cast<int32_t>(stackVecFixupsRelative.size() * 8);
 			SafePushCode(rgcode);
 			SafePushCode(cbSub);
 			FnEpilogue();
@@ -976,7 +971,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("call %d\n", idx);
 			Verify(idx < m_cfn);
 			vecifnCompile.push_back(idx);
-			auto ptype = g_vecfn_types.at(g_vecfn_entries.at(idx)).get();
+			auto ptype = m_pctxt->m_vecfn_types.at(m_pctxt->m_vecfn_entries.at(idx)).get();
 			CallIfn(idx, clocals, ptype->cparams, ptype->fHasReturnValue, false /*fIndirect*/);
 			break;
 		}
@@ -985,7 +980,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("call_indirect\n");
 			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
 			safe_read_buffer<char>(&pop, &cb);	// reserved
-			auto ptype = g_vecfn_types.at(idx).get();
+			auto ptype = m_pctxt->m_vecfn_types.at(idx).get();
 			CallIfn(idx, clocals, ptype->cparams, ptype->fHasReturnValue, true /*fIndirect*/);
 			break;
 		}
@@ -1150,7 +1145,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
-			printf("i64.load $%X\n");
+			printf("i64.load $%X\n", offset);
 			LoadMem(offset, true, 8, false);
 			break;
 		}
@@ -1159,7 +1154,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
-			printf("i64.load8_s $%X\n");
+			printf("i64.load8_s $%X\n", offset);
 			LoadMem(offset, true, 1, true);
 			break;
 		}
@@ -1169,7 +1164,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
-			printf("i64/32.load16_u $%X\n");
+			printf("i64/32.load16_u $%X\n", offset);
 			LoadMem(offset, false, 2, false);
 			break;
 		}
@@ -1178,7 +1173,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
-			printf("i64.load16_s $%X\n");
+			printf("i64.load16_s $%X\n", offset);
 			LoadMem(offset, true, 2, true);
 			break;
 		}
@@ -1392,7 +1387,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			// Jump targets are after the LeaveBlock because the branch already performs the work (TODO: Maybe not do that?)
 			for (int32_t *poffsetFix : stackVecFixupsRelative.back())
 			{
-				*poffsetFix = m_pexecPlaneCur - (reinterpret_cast<uint8_t*>(poffsetFix) + sizeof(*poffsetFix));
+				*poffsetFix = numeric_cast<int32_t>(m_pexecPlaneCur - (reinterpret_cast<uint8_t*>(poffsetFix) + sizeof(*poffsetFix)));
 			}
 			for (void **pp : stackVecFixupsAbsolute.back())
 			{
@@ -1422,25 +1417,6 @@ void JitWriter::CompileFn(uint32_t ifn)
 	printf("\n\n");
 }
 
-struct ExecutionControlBlock
-{
-	JitWriter *pjitWriter;
-	void *pfnEntry;
-	void *operandStack;
-	void *localsStack;
-	void *memoryBase;
-
-	uint64_t cFnIndirect;
-	uint32_t *rgfnIndirect;
-	uint32_t *rgFnTypeIndicies;
-	uint64_t cFnTypeIndicies;
-	void *rgFnPtrs;
-	uint64_t cFnPtrs;
-
-	// Values set by the executing code
-	void *stackrestore;
-	uint64_t retvalue;
-};
 extern "C" uint64_t ExternCallFnASM(ExecutionControlBlock *pctl);
 
 
@@ -1476,8 +1452,8 @@ void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
 		// Reserve 8GB of memory for our heap plane, this is 2^33 because effective addresses can compute to 33 bits (even though we actually truncate to 32 we reserve the max to prevent security flaws if we truncate incorrectly)
 		m_pheap = VirtualAlloc(nullptr, 0x200000000, MEM_RESERVE, PAGE_NOACCESS);
 		Verify(VirtualAlloc(m_pheap, 0x100000000, MEM_COMMIT, PAGE_READWRITE) != nullptr);
-		Verify(g_vecmem.size() < 0x100000000);
-		memcpy(m_pheap, g_vecmem.data(), g_vecmem.size());
+		Verify(m_pctxt->m_vecmem.size() < 0x100000000);
+		memcpy(m_pheap, m_pctxt->m_vecmem.data(), m_pctxt->m_vecmem.size());
 	}
 
 	ExecutionControlBlock ectl;
@@ -1486,10 +1462,10 @@ void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
 	ectl.operandStack = vecoperand.data();
 	ectl.localsStack = veclocals.data();
 	ectl.memoryBase = m_pheap;
-	ectl.cFnIndirect = g_vecIndirectFnTable.size();
-	ectl.rgfnIndirect = g_vecIndirectFnTable.data();
-	ectl.rgFnTypeIndicies = g_vecfn_entries.data();
-	ectl.cFnTypeIndicies = g_vecfn_entries.size();
+	ectl.cFnIndirect = m_pctxt->m_vecIndirectFnTable.size();
+	ectl.rgfnIndirect = m_pctxt->m_vecIndirectFnTable.data();
+	ectl.rgFnTypeIndicies = m_pctxt->m_vecfn_entries.data();
+	ectl.cFnTypeIndicies = m_pctxt->m_vecfn_entries.size();
 	ectl.rgFnPtrs = (void*)m_pexecPlane;
 	ectl.cFnPtrs = m_cfn;
 	

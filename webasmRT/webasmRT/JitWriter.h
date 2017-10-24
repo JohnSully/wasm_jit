@@ -1,14 +1,22 @@
 #pragma once
+
+#include "wasm_types.h"
+#include "Exceptions.h"
+#include "numeric_cast.h"
+
 extern "C" void CompileFn(struct ExecutionControlBlock *pectl, uint32_t ifn);
 class JitWriter
 {
 	friend void CompileFn(ExecutionControlBlock *pectl, uint32_t ifn);
 public:
-	JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls);
+	JitWriter(class WasmContext *pctxt, uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls);
 
 	void CompileFn(uint32_t ifn);
 
 	void ExternCallFn(uint32_t ifn, void *pvAddrMem);
+
+	// Psuedo private callbacks from ASM
+	uint64_t JitWriter::CReentryFn(int ifn, uint64_t *pvArgs, uint8_t *pvMemBase, ExecutionControlBlock *pecb);
 private:
 	void SafePushCode(const void *pv, size_t cb);
 	template<typename T, size_t size>
@@ -51,9 +59,9 @@ private:
 		ShiftRightUnsigned,
 	};
 
-	uint32_t RelAddrPfnVector(uint32_t ifn, uint32_t opSize) const
+	int32_t RelAddrPfnVector(uint32_t ifn, uint32_t opSize) const
 	{
-		return (m_pexecPlane + (sizeof(void*)*ifn)) - (m_pexecPlaneCur + opSize);
+		return numeric_cast<int32_t>((m_pexecPlane + (sizeof(void*)*ifn)) - (m_pexecPlaneCur + opSize));
 	}
 
 	// Common code sequences (does not leave machine in valid state)
@@ -101,6 +109,7 @@ private:
 	void ProtectForRuntime();
 	void UnprotectRuntime();
 
+	class WasmContext *m_pctxt = nullptr;	// Parent
 	uint8_t *m_pexecPlane = nullptr;
 	uint8_t *m_pcodeStart = nullptr;
 	uint8_t *m_pexecPlaneCur = nullptr;

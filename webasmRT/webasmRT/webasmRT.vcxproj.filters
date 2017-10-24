@@ -45,6 +45,15 @@
     <ClInclude Include="BuiltinFunctions.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="WasmContext.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ExecutionControlBlock.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="numeric_cast.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -63,6 +72,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="rt_callbacks.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="WasmContext.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
