@@ -13,6 +13,7 @@ extern std::vector<export_entry> g_vecexports;
 extern std::vector<FunctionCodeEntry::unique_pfne_ptr> g_vecfn_code;
 extern std::vector<uint8_t> g_vecmem;
 extern std::vector<int> g_vecimports;
+extern std::vector<uint32_t> g_vecIndirectFnTable;
 struct GlobalVar
 {
 	uint64_t val;
@@ -20,12 +21,19 @@ struct GlobalVar
 	bool fMutable;
 };
 extern std::vector<GlobalVar> g_vecglbls;
+extern "C" void WasmToC();
+extern "C" void CallIndirectShim();
+extern "C" void BranchTable();
 
 JitWriter::JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls)
 	: m_pexecPlane(pexecPlane), m_pexecPlaneCur(pexecPlane), m_pexecPlaneMax(pexecPlane + cbExec), m_cfn(cfn)
 {
 	uint8_t *pvZeroStart = m_pexecPlaneCur;
 	m_pexecPlaneCur += sizeof(void*) * cfn;	// allocate the function table, ensuring its within 32-bits of all our code
+	
+	m_pfnCallIndirectShim = (void**)m_pexecPlaneCur;
+	m_pfnBranchTable = ((void**)m_pexecPlaneCur) + 1;
+	m_pexecPlaneCur += sizeof(*m_pfnCallIndirectShim) * 2;
 
 	m_pexecPlaneCur += (4096 - reinterpret_cast<uint64_t>(m_pexecPlaneCur)) % 4096;
 	m_pGlobalsStart = (uint64_t*)m_pexecPlaneCur;
@@ -33,6 +41,11 @@ JitWriter::JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglb
 	m_pexecPlaneCur += (4096 - reinterpret_cast<uint64_t>(m_pexecPlaneCur)) % 4096;
 	m_pcodeStart = m_pexecPlaneCur;
 	memset(pvZeroStart, 0, m_pexecPlaneCur - pvZeroStart);	// these areas should be initialized to zero
+
+	for (size_t iimportfn = 0; iimportfn < g_vecimports.size(); ++iimportfn)
+		reinterpret_cast<void**>(m_pexecPlane)[iimportfn] = WasmToC;
+	*m_pfnCallIndirectShim = CallIndirectShim;
+	*m_pfnBranchTable = BranchTable;
 }
 
 void JitWriter::SafePushCode(const void *pv, size_t cb)
@@ -61,29 +74,6 @@ void JitWriter::_PopContractStack()
 	SafePushCode(rgcode, _countof(rgcode));
 }
 
-void JitWriter::_LoadMem32(uint32_t offset)
-{
-	// add eax, offset	; note this implicitly ands with 0xffffffff ensuring that when referenced as rax it will always be a positive number between 0 and 2^32 - 1
-	static const uint8_t rgcodeAdd[] = { 0x05 };
-	SafePushCode(rgcodeAdd);
-	SafePushCode(offset);
-	// mov eax, [rsi+rax]	{ 0x8B, 0x04, 0x06 }
-	static const uint8_t rgcode[] = { 0x8B, 0x04, 0x06 };
-	SafePushCode(rgcode, _countof(rgcode));
-}
-
-void JitWriter::_SetMem32(uint32_t offset)
-{
-	_PopSecondParam();
-	// add ecx, offset	; note this implicitly ands with 0xffffffff ensuring that when referenced as rax it will always be a positive number between 0 and 2^32 - 1
-	static const uint8_t rgcodeAdd[] = {0x81, 0xC1 };
-	SafePushCode(rgcodeAdd);
-	SafePushCode(offset);
-	// mov [rsi+rcx], eax	{ 0x89, 0x04, 0x0E }
-	static const uint8_t rgcode[] = { 0x89, 0x04, 0x0E };
-	SafePushCode(rgcode, _countof(rgcode));
-}
-
 void JitWriter::_PopSecondParam(bool fSwapParams)
 {
 	if (fSwapParams)
@@ -103,74 +93,129 @@ void JitWriter::_PopSecondParam(bool fSwapParams)
 	}
 }
 
-void JitWriter::LoadMem32(uint32_t offset)
-{
-	_LoadMem32(offset);
-}
 
-void JitWriter::LoadMem64(uint32_t offset)
+void JitWriter::LoadMem(uint32_t offset, bool f64Dst /* else 32 */, uint32_t cbSrc, bool fSignExtend)
 {
-	// mov rax, [rsi+rax+offset]
-	static const uint8_t rgcode[] = { 0x48, 0x8B, 0x84, 0x06 };
-	SafePushCode(rgcode);
-	SafePushCode(&offset, sizeof(offset));
-}
+	// add eax, offset	; note this implicitly ands with 0xffffffff ensuring that when referenced as rax it will always be a positive number between 0 and 2^32 - 1
+	static const uint8_t rgcodeAdd[] = { 0x05 };
+	SafePushCode(rgcodeAdd);
+	SafePushCode(offset);
 
-void JitWriter::LoadMem8(uint32_t offset, bool fSigned)
-{
-	if (fSigned)
+	const char *szCode = nullptr;
+	if (fSignExtend)
 	{
-		// movsx rax, byte ptr [rsi + rax + offset]
-		static const uint8_t rgcode[] = { 0x0F, 0xBE, 0x84, 0x06 };
-		SafePushCode(rgcode, _countof(rgcode));
+		if (f64Dst)
+		{
+			switch (cbSrc)
+			{
+			default:
+				Verify(false);
+				break;
+
+			case 1:
+				// movsx rax, byte ptr [rsi+rax]
+				szCode = "\x48\x0F\xBE\x04\x06";
+				break;
+
+			case 2:
+				// movsx rax, word ptr [rsi+rax]
+				szCode = "\x48\x0F\xBF\x04\x06";
+				break;
+
+			case 4:
+				// movsx rax, dword ptr [rsi+rax]
+				szCode = "\x48\x63\x04\x06";
+				break;
+			}
+		}
+		else
+		{
+			switch (cbSrc)
+			{
+			default:
+				Verify(false);
+				break;
+
+			case 1:
+				// movsx eax, byte ptr [rsi + rax]
+				szCode = "\x0F\xBE\x04\x06";
+				break;
+
+			case 2:
+				// movsx eax, word ptr [rsi + rax]
+				szCode = "\x0F\xBF\x04\x06";
+			}
+		}
 	}
 	else
 	{
-		// movzx eax, byte ptr [rsi + rax + offset]
-		static const uint8_t rgcode[] = { 0x0F, 0xB6, 0x84, 0x06 };
-		SafePushCode(rgcode, _countof(rgcode));
-	}
-	SafePushCode(&offset, sizeof(offset));
-}
+		switch (cbSrc)
+		{
+		case 1:
+			// movzx eax, byte ptr [rsi+rax]
+			szCode = "\x0F\xB6\x04\x06";
+			break;
 
-void JitWriter::Load64Mem32(uint32_t offset, bool fSigned)
-{
-	if (fSigned)
-	{
-		// movsx rax, dword ptr [rsi + rax + offset]
-		static const uint8_t rgcode[] = { 0x48, 0x63, 0x84, 0x06 };
-		SafePushCode(rgcode, _countof(rgcode));
-	}
-	else
-	{
-		_LoadMem32(offset);	// implicit zero extend
-	}
-}
+		case 2:
+			// movzx eax, word ptr [rsi + rax]
+			szCode = "\x0F\xB7\x04\x06";
+			break;
 
-void JitWriter::StoreMem32(uint32_t offset)
-{
-	_SetMem32(offset);
-	_PopContractStack();
-}
+		case 4:
+			// mov eax, dword ptr [rsi + rax]
+			szCode = "\x8B\x04\x06";
+			break;
 
-void JitWriter::StoreMem64(uint32_t offset)
+		case 8:
+			Verify(f64Dst);
+			// mov rax, qword ptr [rsi + rax]
+			szCode = "\x48\x8B\x04\x06";
+			break;
+
+		default:
+			Verify(false);
+		}
+	}
+	Verify(szCode != nullptr);
+	SafePushCode(szCode, strlen(szCode));
+}
+void JitWriter::StoreMem(uint32_t offset, uint32_t cbDst)
 {
 	_PopSecondParam();
-	// mov [rsi+rcx+offset], rax	
-	static const uint8_t rgcode[] = { 0x48, 0x89, 0x84, 0x0E };
-	SafePushCode(rgcode);
+	// add ecx, offset	; note this implicitly ands with 0xffffffff ensuring that when referenced as rax it will always be a positive number between 0 and 2^32 - 1
+	static const uint8_t rgcodeAdd[] = { 0x81, 0xC1 };
+	SafePushCode(rgcodeAdd);
 	SafePushCode(offset);
-	_PopContractStack();
-}
 
-void JitWriter::StoreMem8(uint32_t offset)
-{
-	_PopSecondParam();
-	// mov [rsi+rcx+offset], al	
-	static const uint8_t rgcode[] = { 0x88, 0x84, 0x0E };
-	SafePushCode(rgcode);
-	SafePushCode(offset);
-	_PopContractStack();
+	const char *szCode = nullptr;
+	switch (cbDst)
+	{
+	default:
+		Verify(false);
+		break;
+
+	case 1:
+		// mov [rsi + rcx], al
+		szCode = "\x88\x04\x0E";
+		break;
+
+	case 2:
+		// mov [rsi + rcx], ax
+		szCode = "\x66\x89\x04\x0E";
+		break;
+
+	case 4:
+		// mov [rsi + rcx], eax
+		szCode = "\x89\x04\x0E";
+		break;
+
+	case 8:
+		// mov [rsi + rcx], rax
+		szCode = "\x48\x89\x04\x0E";
+		break;
+	}
+	Verify(szCode != nullptr);
+	SafePushCode(szCode, strlen(szCode));
 }
 
 void JitWriter::Sub32()
@@ -194,6 +239,14 @@ void JitWriter::Add64()
 	_PopSecondParam();
 	// add rax, rcx
 	static const uint8_t rgcode[] = { 0x48, 0x01, 0xC8 };
+	SafePushCode(rgcode);
+}
+
+void JitWriter::Sub64()
+{
+	_PopSecondParam();
+	// sub rax, rcx
+	static const uint8_t rgcode[] = { 0x48, 0x29, 0xC8 };
 	SafePushCode(rgcode);
 }
 
@@ -241,7 +294,7 @@ void JitWriter::PushC64(uint64_t c)
 	}
 }
 
-void JitWriter::Div64()
+void JitWriter::Ud2()
 {
 	// NYI: ud2
 	static const uint8_t rgcode[] = { 0x0F, 0x0B };
@@ -294,6 +347,17 @@ void JitWriter::Eqz32()
 	//	xor eax, eax		{ 0x31, 0xC0 }
 	// Lz:
 	static const uint8_t rgcode[] = { 0x85, 0xC0, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x74, 0x02, 0x31, 0xC0 };
+	SafePushCode(rgcode, _countof(rgcode));
+}
+
+void JitWriter::Eqz64()
+{
+	//	test rax, rax		{ 0x48, 0x85, 0xC0 }
+	//	mov eax, 1			{ 0xb8, 0x01, 0x00, 0x00, 0x00}
+	//  jz  Lz				{ 0x74, 0x02 }
+	//	xor eax, eax		{ 0x31, 0xC0 }
+	// Lz:
+	static const uint8_t rgcode[] = { 0x48, 0x85, 0xC0, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x74, 0x02, 0x31, 0xC0 };
 	SafePushCode(rgcode, _countof(rgcode));
 }
 
@@ -398,7 +462,7 @@ int32_t *JitWriter::Jump(void *pvJmp)
 	return poffsetRet;
 }
 
-void JitWriter::CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCallee, bool fReturnValue)
+void JitWriter::CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCallee, bool fReturnValue, bool fIndirect)
 {
 	// Stage 1: Push arguments
 	//	add	 rbx, (clocalsCaller * sizeof(uint64_t))
@@ -407,23 +471,58 @@ void JitWriter::CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCall
 	uint32_t cbLocals = (clocalsCaller * sizeof(uint64_t));
 	SafePushCode(&cbLocals, sizeof(cbLocals));
 
+	if (fIndirect)
+	{
+		// the top of stack is the function index
+		// back it up into rcx (mov rcx, rax)
+		static const uint8_t rgT[] = { 0x48, 0x89, 0xC1 };
+		SafePushCode(rgT);
+		_PopContractStack();
+	}
+
 	// pop arguments into the newly allocated local variable region
 	while (cargsCallee > 0)
 	{
 		SetLocal(cargsCallee - 1, true);
 		--cargsCallee;
 	}
+	
 	_PushExpandStack();	// put the top of the stack into RAM so we can recover it
 	//  push rdi		; backup the operand stack
 	static const uint8_t rgcode[] = { 0x57 };
 	SafePushCode(rgcode, _countof(rgcode));
 
-	// Stage 2, call the actual function
-	// call [rip - PfnVector]
-	static const uint8_t rgcodeCall[] = { 0xFF, 0x15 };
-	int32_t offset = RelAddrPfnVector(ifn, 6);
-	SafePushCode(rgcodeCall, _countof(rgcodeCall));
-	SafePushCode(&offset, sizeof(offset));
+	if (fIndirect)
+	{
+		// ifn is the type in this case
+		// mov eax, ifn
+		SafePushCode(uint8_t(0xB8));
+		SafePushCode(uint32_t(ifn));
+
+		// call [m_pfnCallIndirectShim]
+		static const uint8_t rgcodeCallIndirect[] = { uint8_t(0xFF), uint8_t(0x15) };
+		SafePushCode(rgcodeCallIndirect);
+		ptrdiff_t diffFn = reinterpret_cast<ptrdiff_t>(m_pfnCallIndirectShim) - reinterpret_cast<ptrdiff_t>(m_pexecPlaneCur + 4);
+		Verify(static_cast<int32_t>(diffFn) == diffFn);
+		SafePushCode(int32_t(diffFn));
+	}
+	else
+	{
+		if (ifn < g_vecimports.size())
+		{
+			// mov ecx ifn ; so we know the function
+			static const uint8_t rgcodeFnNum[] = { 0xB9 };
+			SafePushCode(rgcodeFnNum);
+			SafePushCode(ifn);
+		}
+
+		// Stage 2, call the actual function
+		// call [rip - PfnVector]
+		static const uint8_t rgcodeCall[] = { 0xFF, 0x15 };
+		int32_t offset = RelAddrPfnVector(ifn, 6);
+		SafePushCode(rgcodeCall, _countof(rgcodeCall));
+		SafePushCode(&offset, sizeof(offset));
+	}
 
 	// Stage 3, on return cleanup the stack
 	//	pop rdi
@@ -559,11 +658,11 @@ void JitWriter::Select()
 	//	sub rdi, 16			; pop 2 vals from stack
 	//	xor rcx, rcx		; zero our index
 	//	test eax, eax		; test the conditional
-	//	jnz FirstArg			; jump if index should be zero
+	//	jnz FirstArg		; jump if index should be zero
 	//	add rcx, 8			; else index should be 8 (bytes)
 	// FirstArg:
 	//	mov rax, [rdi+rcx]	; load the value
-	static const uint8_t rgcode[] = { 0x48, 0x83, 0xEF, 0x10, 0x48, 0x31, 0xC9, 0x85, 0xC0, 0x74, 0x04, 0x48, 0x83, 0xC1, 0x08, 0x48, 0x8B, 0x04, 0x0F };
+	static const uint8_t rgcode[] = { 0x48, 0x83, 0xEF, 0x10, 0x48, 0x31, 0xC9, 0x85, 0xC0, 0x75, 0x04, 0x48, 0x83, 0xC1, 0x08, 0x48, 0x8B, 0x04, 0x0F };
 	SafePushCode(rgcode, _countof(rgcode));
 }
 
@@ -611,53 +710,53 @@ void JitWriter::BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, 
 	}
 	uint32_t default_target = safe_read_buffer<varuint32>(ppoperand, pcbOperand);
 
-	// jump to an argument in the table or default
-	//	note: this is a candidate for more optimization but for now we will always make a jump table
+	auto &pairBlockDft = *(stackBlockTypeAddr.rbegin() + default_target);
+	bool fRetVal = (pairBlockDft.first != value_type::empty_block);
+
+	// Setup the parameters and call thr BranchTable helper
+	//	rcx - table pointer
+	//
+	//	lea rcx, [rip+distance_to_branch_table]		{ 0x48, 0x8D, 0x0D, rel32 }
+	//	jmp [m_pfnBranchTable]						{ 0xFF, 0x25, rel32 }
+	int32_t branchtable_offset = 6;
+	static const uint8_t rgcodeLea[] = { 0x48, 0x8D, 0x0D };
+	SafePushCode(rgcodeLea);
+	SafePushCode(branchtable_offset);
 	
-	//	cmp rax, target_count
-	//	jae [default_target]
-	// ;else use table
-	// lea rcx, [rip + table_addr]	// keep the code snippet relocateable
-	// lea rax, [rcx + rax*8]
-	// jmp [rax]
-	// table_addr:
-	//	...
+	static const uint8_t rgcodeJmp[] = { 0xFF, 0x25 };
+	SafePushCode(rgcodeJmp);
+	ptrdiff_t diffFn = reinterpret_cast<ptrdiff_t>(m_pfnBranchTable) - reinterpret_cast<ptrdiff_t>(m_pexecPlaneCur + 4);
+	Verify(diffFn == static_cast<int32_t>(diffFn));
+	SafePushCode(static_cast<int32_t>(diffFn));
 
-	// cmp rax, target_count
-	static const uint8_t rgcodeCmp[] = { 0x48, 0x3D };
-	SafePushCode(rgcodeCmp);
+	// Now write the branch table
+	/*
+	;	Table Format:
+	;		dword count
+	;		dword fReturnVal
+	;		--default_target--
+	;		qword distance (how many blocks we're jumping)
+	;		qword target_addr
+	;		--table_targets---
+	;		.... * count
+	*/
+	// Header
 	SafePushCode(target_count);
-
-	// jae [default_target delta]
-	static const uint8_t rgcodeJAE_rel32[] = { 0x0F, 0x83 };
-	SafePushCode(rgcodeJAE_rel32);
-	if (stackBlockTypeAddr.at(default_target).second == nullptr)
+	SafePushCode(int32_t(fRetVal));
+	// default target
+	SafePushCode(uint64_t(default_target));
+	SafePushCode(pairBlockDft.second);
+	if (pairBlockDft.second == nullptr)
+		(stackVecFixupsAbsolute.rbegin() + default_target)->push_back(reinterpret_cast<void**>(m_pexecPlaneCur) - 1);
+	// table targets
+	for (uint32_t itarget = 0; itarget < target_count; ++itarget)
 	{
-		int32_t delta = -6;	// cause an infinite loop if this is not fixed up
-		(stackVecFixups.rbegin() + default_target)->push_back((int*)m_pexecPlaneCur);
-		SafePushCode(delta);
-	}
-	else
-	{
-		int32_t delta = reinterpret_cast<uint8_t*>(stackBlockTypeAddr[default_target].second) - (m_pexecPlaneCur + 4);
-		SafePushCode(delta);
-	}
-
-	// lea rcx, [rip + table_addr]
-	// lea rax, [rcx + rax*8]
-	// jmp [rax]
-	//table_addr:
-	static const uint8_t rgcode[] = { 0x48, 0x8D, 0x0D, 0x06, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x04, 0xC1, 0xFF, 0x20 };
-	SafePushCode(rgcode);
-
-	// Now write the jump table
-	for (uint32_t target : vectargets)
-	{
-		if (stackBlockTypeAddr.at(target).second == nullptr)
-		{
-			stackVecFixupsAbsolute[target].push_back((void**)m_pexecPlaneCur);
-		}
-		SafePushCode(stackBlockTypeAddr.at(target).second);
+		uint32_t target = vectargets[itarget];
+		SafePushCode(target);
+		auto &pairBlock = *(stackBlockTypeAddr.rbegin() + target);
+		SafePushCode(pairBlock.second);
+		if (pairBlock.second == nullptr)
+			(stackVecFixupsAbsolute.rbegin() + default_target)->push_back(reinterpret_cast<void**>(m_pexecPlaneCur) - 1);
 	}
 }
 
@@ -718,9 +817,18 @@ void JitWriter::SetGlobal(uint32_t idx)
 	_PopContractStack();
 }
 
+void JitWriter::ExtendSigned32_64()
+{
+	// mov [rdi], eax
+	// movsxd rax, dword ptr [rdi]
+	static const uint8_t rgcode[] = { 0x89, 0x07, 0x48, 0x63, 0x07 };
+	SafePushCode(rgcode);
+}
+
 void JitWriter::CompileFn(uint32_t ifn)
 {
 	size_t cfnImports = 0;
+	Verify(ifn >= g_vecimports.size(), "Attempt to compile an import");
 	FunctionCodeEntry *pfnc = g_vecfn_code[ifn - g_vecimports.size()].get();
 	const uint8_t *pop = pfnc->vecbytecode.data();
 	size_t cb = pfnc->vecbytecode.size();
@@ -741,7 +849,24 @@ void JitWriter::CompileFn(uint32_t ifn)
 	std::vector<uint32_t> vecifnCompile;
 
 	FnPrologue(clocals, cparams);
-	printf("Function %d:\n", ifn);
+
+	const char *szFnName = nullptr;
+	for (size_t iexport = 0; iexport < g_vecexports.size(); ++iexport)
+	{
+		if (g_vecexports[iexport].kind == external_kind::Function)
+		{
+			if (g_vecexports[iexport].index == ifn)
+			{
+				szFnName = g_vecexports[iexport].strName.c_str();
+				break;
+			}
+		}
+	}
+
+	if (szFnName != nullptr)
+		printf("Function %s (%d):\n", szFnName, ifn);
+	else
+		printf("Function %d:\n", ifn);
 	while (cb > 0)
 	{
 		cb--;	// count *pop
@@ -828,6 +953,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 		}
 		case opcode::br_table:
 		{
+			printf("br_table\n");
 			BranchTableParse(&pop, &cb, stackBlockTypeAddr, stackVecFixupsRelative, stackVecFixupsAbsolute);
 			break;
 		}
@@ -851,7 +977,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			Verify(idx < m_cfn);
 			vecifnCompile.push_back(idx);
 			auto ptype = g_vecfn_types.at(g_vecfn_entries.at(idx)).get();
-			CallIfn(idx, clocals, ptype->cparams, ptype->fHasReturnValue);
+			CallIfn(idx, clocals, ptype->cparams, ptype->fHasReturnValue, false /*fIndirect*/);
 			break;
 		}
 		case opcode::call_indirect:
@@ -859,8 +985,8 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("call_indirect\n");
 			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
 			safe_read_buffer<char>(&pop, &cb);	// reserved
-			static const uint8_t rgcode[] = { 0x0F, 0x0B };	// NYI
-			SafePushCode(rgcode, _countof(rgcode));
+			auto ptype = g_vecfn_types.at(idx).get();
+			CallIfn(idx, clocals, ptype->cparams, ptype->fHasReturnValue, true /*fIndirect*/);
 			break;
 		}
 
@@ -937,25 +1063,78 @@ void JitWriter::CompileFn(uint32_t ifn)
 			Compare(CompareType::GreaterThanEqual, false /*fSigned*/, false /*f64*/);
 			break;
 
+
+		case opcode::i64_eqz:
+			printf("i64.eqz\n");
+			Eqz64();
+			break;
+		case opcode::i64_eq:
+			printf("i64.eq\n");
+			Compare(CompareType::Equal, false /*fSigned*/, true /*f64*/);
+			break;
 		case opcode::i64_ne:
-			printf("i64_ne\n");
+			printf("i64.ne\n");
 			Compare(CompareType::NotEqual, false /*fSigned*/, true /*f64*/);
 			break;
+		case opcode::i64_lt_s:
+			printf("i64.lt_s\n");
+			Compare(CompareType::LessThan, true /*fSigned*/, true /*f64*/);
+			break;
+		case opcode::i64_lt_u:
+			printf("i64.lt_u\n");
+			Compare(CompareType::LessThan, false /*fSigned*/, true /*f64*/);
+			break;
+		case opcode::i64_gt_s:
+			printf("i64.gt_s\n");
+			Compare(CompareType::GreaterThan, true /*fSigned*/, true /*f64*/);
+			break;
+		case opcode::i64_gt_u:
+			printf("i64.gt_u\n");
+			Compare(CompareType::GreaterThan, false /*fSigned*/, true /*f64*/);
+			break;
+		case opcode::i64_le_s:
+			printf("i64.le_s\n");
+			Compare(CompareType::LessThanEqual, true /*fSigned*/, true /*f64*/);
+			break;
+		case opcode::i64_le_u:
+			printf("i64.le_u\n");
+			Compare(CompareType::LessThanEqual, false /*fSigned*/, true /*f64*/);
+			break;
+		case opcode::i64_ge_s:
+			printf("i64.ge_s\n");
+			Compare(CompareType::GreaterThanEqual, true /*fSigned*/, true /*f64*/);
+			break;
+		case opcode::i64_ge_u:
+			printf("i64.ge_u\n");
+			Compare(CompareType::GreaterThanEqual, false /*fSigned*/, true /*f64*/);
+			break;
 
+		case opcode::i64_load32_u:
 		case opcode::i32_load:
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
-			printf("i32_load $%X\n", offset);
-			LoadMem32(offset);
+			printf("i32.load $%X\n", offset);
+			LoadMem(offset, false, 4, false);
 			break;
 		}
+
+		case opcode::f64_load:
+		{
+			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
+			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+			printf("f64.load $%X\n", offset);
+			Ud2();
+			break;
+		}
+
+		case opcode::i64_load8_u:
 		case opcode::i32_load8_u:
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i32_load8_u $%X\n", offset);
-			LoadMem8(offset, false /*fSigned*/);
+			LoadMem(offset, false, 1, false);
 			break;
 		}
 		case opcode::i32_load8_s:
@@ -963,7 +1142,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i32_load8_s $%X\n", offset);
-			LoadMem8(offset, true /*fSigned*/);
+			LoadMem(offset, false, 1, true);
 			break;
 		}
 
@@ -972,7 +1151,35 @@ void JitWriter::CompileFn(uint32_t ifn)
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i64.load $%X\n");
-			LoadMem64(offset);
+			LoadMem(offset, true, 8, false);
+			break;
+		}
+
+		case opcode::i64_load8_s:
+		{
+			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
+			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+			printf("i64.load8_s $%X\n");
+			LoadMem(offset, true, 1, true);
+			break;
+		}
+
+		case opcode::i32_load16_u:
+		case opcode::i64_load16_u:
+		{
+			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
+			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+			printf("i64/32.load16_u $%X\n");
+			LoadMem(offset, false, 2, false);
+			break;
+		}
+
+		case opcode::i64_load16_s:
+		{
+			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
+			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+			printf("i64.load16_s $%X\n");
+			LoadMem(offset, true, 2, true);
 			break;
 		}
 
@@ -981,7 +1188,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i64_load32_s $%X\n", offset);
-			Load64Mem32(offset, true /*fSigned*/);
+			LoadMem(offset, true, 8, false);
 			break;
 		}
 
@@ -1024,12 +1231,13 @@ void JitWriter::CompileFn(uint32_t ifn)
 			break;
 		}
 
+		case opcode::i64_store32:
 		case opcode::i32_store:
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i32.store $%X\n", offset);
-			StoreMem32(offset);
+			StoreMem(offset, 4);
 			break;
 		}
 
@@ -1038,16 +1246,26 @@ void JitWriter::CompileFn(uint32_t ifn)
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i64.store $%X\n", offset);
-			StoreMem64(offset);
+			StoreMem(offset, 8);
 			break;
 		}
 
+		case opcode::i32_store16:
+		{
+			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
+			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+			printf("i32.store16 $%X\n", offset);
+			StoreMem(offset, 2);
+			break;
+		}
+
+		case opcode::i64_store8:
 		case opcode::i32_store8:
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i32.store8 $%X\n", offset);
-			StoreMem8(offset);
+			StoreMem(offset, 1);
 			break;
 		}
 
@@ -1066,6 +1284,22 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::i32_mul:
 			printf("i32.mul\n");
 			Mul32();
+			break;
+		case opcode::i32_div_s:
+			printf("i32.div_s\n");
+			Ud2();
+			break;
+		case opcode::i32_div_u:
+			printf("i32.div_u\n");
+			Ud2();
+			break;
+		case opcode::i32_rem_s:
+			printf("i32.rem_s\n");
+			Ud2();
+			break;
+		case opcode::i32_rem_u:
+			printf("i32.rem_u\n");
+			Ud2();
 			break;
 		case opcode::i32_and:
 			printf("i32.and\n");
@@ -1096,13 +1330,26 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("i64.add\n");
 			Add64();
 			break;
+		case opcode::i64_sub:
+			printf("i64.sub\n");
+			Sub64();
+			break;
 		case opcode::i64_mul:
 			printf("i64.mul\n");
 			Mul64();
 			break;
+
+		case opcode::i64_div_s:
+			printf("i64.div_s\n");
+			Ud2();
+			break;
 		case opcode::i64_div_u:
 			printf("i64.div_u\n");
-			Div64();
+			Ud2();
+			break;
+		case opcode::i64_rem_s:
+			printf("i64.rem_s\n");
+			Ud2();
 			break;
 		case opcode::i64_and:
 			printf("i64.and\n");
@@ -1111,6 +1358,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::i64_or:
 			printf("i64.or\n");
 			LogicOp64(LogicOperation::Or);
+			break;
+		case opcode::i64_xor:
+			printf("ix64.xor\n");
+			LogicOp64(LogicOperation::Xor);
 			break;
 		case opcode::i64_shl:
 			printf("i64.shl\n");
@@ -1125,6 +1376,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("i32.wrap/i64\n");
 			break;	// NOP because accessing eax, even when set as rax has the same behavior
 
+		case opcode::i64_extend_s_i32:
+			printf("i64.extend_s_i32\n");
+			ExtendSigned32_64();
+			break;
 		case opcode::i64_extend_u32:
 			printf("i64.extend_u/i32\n");
 			break;	// NOP because the upper register should be zero regardless
@@ -1167,7 +1422,26 @@ void JitWriter::CompileFn(uint32_t ifn)
 	printf("\n\n");
 }
 
-extern "C" uint64_t ExternCallFnASM(void *pfn, void *operandStack, void *localsStack, void *memoryBase);
+struct ExecutionControlBlock
+{
+	JitWriter *pjitWriter;
+	void *pfnEntry;
+	void *operandStack;
+	void *localsStack;
+	void *memoryBase;
+
+	uint64_t cFnIndirect;
+	uint32_t *rgfnIndirect;
+	uint32_t *rgFnTypeIndicies;
+	uint64_t cFnTypeIndicies;
+	void *rgFnPtrs;
+	uint64_t cFnPtrs;
+
+	// Values set by the executing code
+	void *stackrestore;
+	uint64_t retvalue;
+};
+extern "C" uint64_t ExternCallFnASM(ExecutionControlBlock *pctl);
 
 
 void JitWriter::ProtectForRuntime()
@@ -1183,6 +1457,7 @@ void JitWriter::UnprotectRuntime()
 	Verify(VirtualProtect(m_pexecPlane, (uint8_t*)m_pGlobalsStart - m_pexecPlane, PAGE_READWRITE, &dwT));
 	Verify(VirtualProtect(m_pcodeStart, m_pexecPlaneCur - m_pcodeStart, PAGE_READWRITE, &dwT));
 }
+
 void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
 {
 	uint64_t retV;
@@ -1205,7 +1480,27 @@ void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
 		memcpy(m_pheap, g_vecmem.data(), g_vecmem.size());
 	}
 
+	ExecutionControlBlock ectl;
+	ectl.pjitWriter = this;
+	ectl.pfnEntry = pfn;
+	ectl.operandStack = vecoperand.data();
+	ectl.localsStack = veclocals.data();
+	ectl.memoryBase = m_pheap;
+	ectl.cFnIndirect = g_vecIndirectFnTable.size();
+	ectl.rgfnIndirect = g_vecIndirectFnTable.data();
+	ectl.rgFnTypeIndicies = g_vecfn_entries.data();
+	ectl.cFnTypeIndicies = g_vecfn_entries.size();
+	ectl.rgFnPtrs = (void*)m_pexecPlane;
+	ectl.cFnPtrs = m_cfn;
+	
 	ProtectForRuntime();
-	retV = ExternCallFnASM(pfn, vecoperand.data(), veclocals.data(), m_pheap);
+	retV = ExternCallFnASM(&ectl);
 	UnprotectRuntime();
+}
+
+extern "C" void CompileFn(ExecutionControlBlock *pectl, uint32_t ifn)
+{
+	pectl->pjitWriter->UnprotectRuntime();
+	pectl->pjitWriter->CompileFn(ifn);
+	pectl->pjitWriter->ProtectForRuntime();
 }

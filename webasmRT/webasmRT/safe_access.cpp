@@ -41,9 +41,9 @@ varuint32 safe_read_buffer(const uint8_t **prgb, size_t *pcb)
 template<>
 varuint64 safe_read_buffer(const uint8_t **prgb, size_t *pcb)
 {
-	uint32_t ret = 0;
+	uint64_t ret = 0;
 	uint32_t shift = 0;
-	for (int ib = 0; ib < 5 && *pcb > 0; ++ib)
+	for (int ib = 0; ib < 10 && *pcb > 0; ++ib)
 	{
 		ret |= (**prgb & 0x7F) << shift;
 		shift += 7;

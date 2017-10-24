@@ -1,7 +1,8 @@
 #pragma once
-
+extern "C" void CompileFn(struct ExecutionControlBlock *pectl, uint32_t ifn);
 class JitWriter
 {
+	friend void CompileFn(ExecutionControlBlock *pectl, uint32_t ifn);
 public:
 	JitWriter(uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls);
 
@@ -26,7 +27,7 @@ private:
 	}
 
 	template<typename T>
-	void SafePushCode(T &val)
+	void SafePushCode(T &&val)
 	{
 		SafePushCode<T>(val, std::is_array<T>());
 	}
@@ -59,22 +60,17 @@ private:
 	void _PushExpandStack();
 	void _PopContractStack();
 	void _PopSecondParam(bool fSwapParams = false);
-	void _LoadMem32(uint32_t offset);
-	void _SetMem32(uint32_t offset);
 	void _SetDbgReg(uint32_t opcode);
 
 	// common operations (does leave machine in valid state)
-	void LoadMem32(uint32_t offset);
-	void LoadMem64(uint32_t offset);
-	void Load64Mem32(uint32_t offset, bool fSigned);
-	void LoadMem8(uint32_t offset, bool fSigned);
-	void StoreMem32(uint32_t offset);
-	void StoreMem64(uint32_t offset);
-	void StoreMem8(uint32_t offset);
+	void LoadMem(uint32_t offset, bool f64Dst /* else 32 */, uint32_t cbSrc, bool fSignExtend);
+	void StoreMem(uint32_t offset, uint32_t cbDst);
+
 	void Sub32();
 	void Add32();
 	void Mul32();
 	void Add64();
+	void Sub64();
 	void Mul64();
 	void Div64();
 	void Popcnt32();
@@ -87,14 +83,17 @@ private:
 	void Select();
 	void Compare(CompareType type, bool fSigned, bool f64);
 	void Eqz32();
+	void Eqz64();
 	void LogicOp(LogicOperation op);
 	void LogicOp64(LogicOperation op);
 	int32_t *JumpNIf(void *addr);	// returns a pointer to the offset encoded in the instruction for later adjustment
 	int32_t *Jump(void *addr);
-	void CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCallee, bool fReturnValue);
+	void CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCallee, bool fReturnValue, bool fIndirect);
 	void FnEpilogue();
 	void FnPrologue(uint32_t clocals, uint32_t cargs);
 	void BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, const std::vector<std::pair<value_type, void*>> &stackBlockTypeAddr, std::vector<std::vector<int32_t*>> &stackVecFixups, std::vector<std::vector<void**>> &stackVecFixupsAbsolute);
+	void ExtendSigned32_64();
+	void Ud2();
 
 	void EnterBlock();
 	void LeaveBlock(bool fHasReturn);
@@ -106,6 +105,8 @@ private:
 	uint8_t *m_pcodeStart = nullptr;
 	uint8_t *m_pexecPlaneCur = nullptr;
 	uint8_t *m_pexecPlaneMax = nullptr;
+	void **m_pfnCallIndirectShim = nullptr;
+	void **m_pfnBranchTable = nullptr;
 	uint64_t *m_pGlobalsStart = nullptr;
 	void *m_pheap = nullptr;
 	size_t m_cfn;

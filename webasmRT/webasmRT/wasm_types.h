@@ -74,6 +74,7 @@ struct wasm_file_header
 
 enum class value_type : uint8_t
 {
+	none = 0,
 	i32 = 0x7f,
 	i64 = 0x7e,
 	f32 = 0x7d,
@@ -138,15 +139,31 @@ enum class opcode : uint8_t
 	set_global = 0x24,
 
 	i32_load =     0x28,
-	i32_load8_u =  0x2d,
+	i64_load = 0x29,
+	f32_load = 0x2a,
+	f64_load = 0x2b,
 	i32_load8_s =  0x2c,
-	i64_load =	   0x29,
+	i32_load8_u = 0x2d,
+	i32_load16_s = 0x2e,
+	i32_load16_u = 0x2f,
+	i64_load8_s	= 0x30,
+	i64_load8_u = 0x31,
+	i64_load16_s = 0x32,
+	i64_load16_u = 0x33,
 	i64_load32_s = 0x34,
+	i64_load32_u = 0x35,
 
 	i32_store = 0x36,
 	i64_store = 0x37,
+	f32_store = 0x38,
+	f64_store = 0x39,
 	i32_store8 = 0x3a,
+	i32_store16 = 0x3b,
+	i64_store8 = 0x3c,
+	i64_store16 = 0x3d,
+	i64_store32 = 0x3e,
 
+	current_memory = 0x3f,
 	grow_memory = 0x40,
 
 	i32_const = 0x41,
@@ -164,12 +181,26 @@ enum class opcode : uint8_t
 	i32_ge_s = 0x4e,	// signed >=
 	i32_ge_u = 0x4f,
 
+	i64_eqz = 0x50,
+	i64_eq = 0x51,
 	i64_ne = 0x52,
+	i64_lt_s = 0x53,
+	i64_lt_u = 0x54,
+	i64_gt_s = 0x55,
+	i64_gt_u = 0x56,
+	i64_le_s = 0x57,
+	i64_le_u = 0x58,
+	i64_ge_s = 0x59,
+	i64_ge_u = 0x5a,
 
 	i32_popcnt = 0x69,
 	i32_add = 0x6a,
 	i32_sub = 0x6b,
 	i32_mul = 0x6c,
+	i32_div_s = 0x6d,
+	i32_div_u = 0x6e,
+	i32_rem_s = 0x6f,
+	i32_rem_u = 0x70,
 	i32_and = 0x71,
 	i32_or = 0x72,
 	i32_xor = 0x73,
@@ -178,14 +209,19 @@ enum class opcode : uint8_t
 	i32_shr_u = 0x76,
 
 	i64_add = 0x7c,
+	i64_sub = 0x7d,
 	i64_mul = 0x7e,
+	i64_div_s = 0x7f,
 	i64_div_u = 0x80,
+	i64_rem_s = 0x81,
 	i64_and = 0x83,
 	i64_or = 0x84,
+	i64_xor = 0x85,
 	i64_shl = 0x86,
 	i64_shr_u = 0x88,
 
 	i32_wrap_i64 = 0xa7,
+	i64_extend_s_i32 = 0xac,
 	i64_extend_u32 = 0xad,
 
 	end = 0x0b,

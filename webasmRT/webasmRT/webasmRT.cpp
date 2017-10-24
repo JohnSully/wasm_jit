@@ -8,12 +8,15 @@
 #include "safe_access.h"
 #include "JitWriter.h"
 #include "ExpressionService.h"
+#include "BuiltinFunctions.h"
 
 std::vector<FunctionTypeEntry::unique_pfne_ptr> g_vecfn_types;
 std::vector<uint32_t> g_vecfn_entries;
 std::vector<table_type> g_vectbl;
 std::vector<resizable_limits> g_vecmem_types;
 std::vector<int> g_vecimports;
+std::vector<uint32_t> g_vecIndirectFnTable;
+std::vector<std::string> g_vecimportFnNames;
 std::vector<export_entry> g_vecexports;
 std::vector<FunctionCodeEntry::unique_pfne_ptr> g_vecfn_code;
 std::vector<uint8_t> g_vecmem;
@@ -96,12 +99,20 @@ void load_tables(const uint8_t *rgbPayload, size_t cbData)
 	varuint32 var32ctbl = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
 	uint32_t ctbl = var32ctbl;
 	g_vectbl.reserve(ctbl);
-	while (ctbl > 0)
+	for (uint32_t itbl = 0; itbl < ctbl; ++itbl)
 	{
 		table_type tbl;
 		tbl.elem_type = safe_read_buffer<elem_type>(&rgbPayload, &cbData);
 		tbl.limits = load_resizeable_limits(&rgbPayload, &cbData);
-		--ctbl;
+		if (itbl == 0)
+		{
+			Verify(tbl.elem_type == elem_type::anyfunc);
+			g_vecIndirectFnTable.resize(tbl.limits.maximum_size);
+		}
+		else
+		{
+			Verify(false);
+		}
 	}
 	Verify(cbData == 0);
 }
@@ -212,7 +223,10 @@ void load_imports(const uint8_t *rgbPayload, size_t cbData)
 
 		case external_kind::Function:
 		{
+			std::string strName(vecrgchModule.begin(), vecrgchModule.end());	// TODO: string_view
+			Verify(strName == "env");
 			g_vecimports.push_back(0);	// for now just place hold
+			g_vecimportFnNames.push_back(std::string(vecrgchField.begin(), vecrgchField.end()));
 			uint32_t ifnType = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
 			g_vecfn_entries.push_back(ifnType);
 			Verify(g_vecfn_entries.back() < g_vecfn_types.size());
@@ -244,9 +258,12 @@ void load_elements(const uint8_t *rgbPayload, size_t cbData)
 		cbData -= cbExpr;
 		rgbPayload += cbExpr;
 		uint32_t numelem = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
+		Verify(var.type == value_type::i32);
+		uint32_t idxStart = var.val;
 		for (uint32_t ielem = 0; ielem < numelem; ++ielem)
 		{
-			safe_read_buffer<varuint32>(&rgbPayload, &cbData);
+			Verify(idxStart + ielem < g_vecIndirectFnTable.size());
+			g_vecIndirectFnTable[idxStart + ielem] = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
 		}
 
 		--celem;
@@ -400,6 +417,16 @@ void CallFunction(const char *szName, JitWriter &writer)
 	Verify(fExecuted);
 }
 
+void LinkImports()
+{
+	for (size_t iimport = 0; iimport < g_vecimports.size(); ++iimport)
+	{
+		int ibuiltin = IBuiltinFromName(g_vecimportFnNames.at(iimport));
+		//Verify(FEqualProto(BuiltinMap[ibuiltin], *g_vecfn_types.at(g_vecfn_entries.at(iimport))));
+		g_vecimports[iimport] = ibuiltin;
+	}
+}
+
 #include <Windows.h>
 int main(int argc, char *argv[])
 {
@@ -435,7 +462,7 @@ int main(int argc, char *argv[])
 	uint8_t *rgexec = (uint8_t*)VirtualAlloc(pvStartAddr, cbExecPlane, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	memset(rgexec, 0xF4, cbExecPlane);	// fill with hlts (because 00 is effectively a NOP)
 	JitWriter writer(rgexec, cbExecPlane, g_vecfn_entries.size(), g_vecglbls.size());
-
+	LinkImports();
 	CallFunction("main", writer);
     return 0;
 }

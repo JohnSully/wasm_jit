@@ -146,6 +146,7 @@
     <Text Include="ReadMe.txt" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="BuiltinFunctions.h" />
     <ClInclude Include="Exceptions.h" />
     <ClInclude Include="ExpressionService.h" />
     <ClInclude Include="FunctionEntry.h" />
@@ -158,6 +159,7 @@
   <ItemGroup>
     <ClCompile Include="ExpressionService.cpp" />
     <ClCompile Include="JitWriter.cpp" />
+    <ClCompile Include="rt_callbacks.cpp" />
     <ClCompile Include="safe_access.cpp" />
     <ClCompile Include="stdafx.cpp" />
     <ClCompile Include="webasmRT.cpp" />
