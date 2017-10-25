@@ -43,6 +43,8 @@ ExternCallFnASM PROC pctl : ptr ExecutionControlBlock
 	mov rax, (ExecutionControlBlock PTR [rcx]).pfnEntry
 	call rax
 	mov (ExecutionControlBlock PTR [rbp]).retvalue, rax
+	mov (ExecutionControlBlock PTR [rbp]).operandStack, rdi
+	mov (ExecutionControlBlock PTR [rbp]).localsStack, rbx
 
 	mov eax, 1
 LDone:

@@ -111,14 +111,13 @@ void WasmContext::load_memory(const uint8_t *rgbPayload, size_t cbData)
 void WasmContext::load_globals(const uint8_t *rgbPayload, size_t cbData)
 {
 	uint32_t cglobals = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
-	ExpressionService exprsvc;
 	while (cglobals > 0)
 	{
 		value_type type = safe_read_buffer<value_type>(&rgbPayload, &cbData);
 		bool fMutable = !!safe_read_buffer<uint8_t>(&rgbPayload, &cbData);
 
 		ExpressionService::Variant variant;
-		size_t cbExpr = exprsvc.CbEatExpression(rgbPayload, cbData, &variant);
+		size_t cbExpr = ExpressionService::CbEatExpression(rgbPayload, cbData, &variant);
 		rgbPayload += cbExpr;
 		cbData -= cbExpr;
 		m_vecglbls.push_back({ variant.val, type, fMutable });
@@ -228,9 +227,9 @@ void WasmContext::load_elements(const uint8_t *rgbPayload, size_t cbData)
 		uint32_t idx = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
 		Verify(idx == 0);	// MVP limitation
 							// LoadExpression
-		ExpressionService exprsvc;
+
 		ExpressionService::Variant var;
-		size_t cbExpr = exprsvc.CbEatExpression(rgbPayload, cbData, &var);
+		size_t cbExpr = ExpressionService::CbEatExpression(rgbPayload, cbData, &var);
 		Verify(cbExpr <= cbData);	// This would be a bug in CbEatExpr but lets double check
 		cbData -= cbExpr;
 		rgbPayload += cbExpr;
@@ -252,14 +251,13 @@ void WasmContext::load_data(const uint8_t *rgbPayload, size_t cbData)
 {
 	uint32_t csegs = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
 
-	ExpressionService exprsvc;
 	while (csegs > 0)
 	{
 		uint32_t idxMem = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
 		Verify(idxMem == 0);	// MVP limitation
 
 		ExpressionService::Variant varOffset;
-		size_t cbExpr = exprsvc.CbEatExpression(rgbPayload, cbData, &varOffset);
+		size_t cbExpr = ExpressionService::CbEatExpression(rgbPayload, cbData, &varOffset);
 		Verify(cbExpr <= cbData);
 		rgbPayload += cbExpr;
 		cbData -= cbExpr;
@@ -378,20 +376,22 @@ bool WasmContext::load_section(FILE *pf)
 }
 
 
-void WasmContext::CallFunction(const char *szName)
+ExpressionService::Variant WasmContext::CallFunction(const char *szName, ExpressionService::Variant *rgargs, uint32_t cargs)
 {
 	bool fExecuted = false;
+	ExpressionService::Variant varRet;
 	for (size_t iexport = 0; iexport < m_vecexports.size(); ++iexport)
 	{
 		if (m_vecexports[iexport].strName == szName)
 		{
 			uint32_t ifn = m_vecexports[iexport].index;
-			m_spjitwriter->ExternCallFn(ifn, m_vecmem.data());
+			varRet = m_spjitwriter->ExternCallFn(ifn, m_vecmem.data(), rgargs, cargs);
 			fExecuted = true;
 			break;
 		}
 	}
 	Verify(fExecuted);
+	return varRet;
 }
 
 void WasmContext::LinkImports()

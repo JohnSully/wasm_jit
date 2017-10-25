@@ -7,12 +7,14 @@ class ExpressionService
 public:
 	struct Variant
 	{
-		uint64_t val;
-		value_type type;
+		bool operator==(const Variant &other)
+		{
+			return (type == other.type) && (val == other.val);
+		}
+		uint64_t val = 0;
+		value_type type = value_type::none;
 	};
 
-	size_t CbEatExpression(const uint8_t *rgb, size_t cb, _Out_ Variant *pvalOut);	// consume an expression from a byte buffer and inform the caller how long it was
-
-private:
-	std::vector<uint8_t> m_vecbytecode;
+	static size_t CbEatExpression(const uint8_t *rgb, size_t cb, _Out_ Variant *pvalOut);	// consume an expression from a byte buffer and inform the caller how long it was
+	static size_t CchEatExpression(const char *sz, size_t cch, _Out_ Variant *pvalOut);
 };

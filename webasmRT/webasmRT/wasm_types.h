@@ -117,6 +117,7 @@ enum class elem_type : uint8_t
 enum class opcode : uint8_t
 {
 	unreachable = 0x00,
+	nop = 0x01,
 
 	block = 0x02,
 	loop = 0x03,
@@ -138,15 +139,15 @@ enum class opcode : uint8_t
 	get_global = 0x23,
 	set_global = 0x24,
 
-	i32_load =     0x28,
+	i32_load = 0x28,
 	i64_load = 0x29,
 	f32_load = 0x2a,
 	f64_load = 0x2b,
-	i32_load8_s =  0x2c,
+	i32_load8_s = 0x2c,
 	i32_load8_u = 0x2d,
 	i32_load16_s = 0x2e,
 	i32_load16_u = 0x2f,
-	i64_load8_s	= 0x30,
+	i64_load8_s = 0x30,
 	i64_load8_u = 0x31,
 	i64_load16_s = 0x32,
 	i64_load16_u = 0x33,
@@ -168,10 +169,12 @@ enum class opcode : uint8_t
 
 	i32_const = 0x41,
 	i64_const = 0x42,
+	f32_const = 0x43,
+	f64_const = 0x44,
 
-	i32_eqz =  0x45,
-	i32_eq =   0x46,
-	i32_ne =   0x47,
+	i32_eqz = 0x45,
+	i32_eq = 0x46,
+	i32_ne = 0x47,
 	i32_lt_s = 0x48,
 	i32_lt_u = 0x49,
 	i32_gt_s = 0x4a,
@@ -193,6 +196,22 @@ enum class opcode : uint8_t
 	i64_ge_s = 0x59,
 	i64_ge_u = 0x5a,
 
+	f32_eq = 0x5b,
+	f32_ne = 0x5c,
+	f32_lt = 0x5d,
+	f32_gt = 0x5e,
+	f32_le = 0x5f,
+	f32_ge = 0x60,
+	
+	f64_eq = 0x61,
+	f64_ne = 0x62,
+	f64_lt = 0x63,
+	f64_gt = 0x64,
+	f64_le = 0x65,
+	f64_ge = 0x66,
+
+	i32_clz = 0x67,
+	i32_ctz = 0x68,
 	i32_popcnt = 0x69,
 	i32_add = 0x6a,
 	i32_sub = 0x6b,
@@ -208,6 +227,7 @@ enum class opcode : uint8_t
 	i32_shr_s = 0x75,
 	i32_shr_u = 0x76,
 
+	i64_ctz = 0x7a,
 	i64_add = 0x7c,
 	i64_sub = 0x7d,
 	i64_mul = 0x7e,
@@ -219,6 +239,10 @@ enum class opcode : uint8_t
 	i64_xor = 0x85,
 	i64_shl = 0x86,
 	i64_shr_u = 0x88,
+
+	f32_neg = 0x8c,
+
+	f64_neg = 0x9a,
 
 	i32_wrap_i64 = 0xa7,
 	i64_extend_s_i32 = 0xac,

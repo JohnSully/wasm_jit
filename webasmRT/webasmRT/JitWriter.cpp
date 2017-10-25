@@ -281,6 +281,18 @@ void JitWriter::PushC64(uint64_t c)
 	}
 }
 
+void JitWriter::PushF32(float val)
+{
+	int32_t ival = *reinterpret_cast<int32_t*>(&val);
+	PushC32(ival);
+}
+
+void JitWriter::PushF64(double val)
+{
+	int64_t ival = *reinterpret_cast<int64_t*>(&val);
+	PushC64(ival);
+}
+
 void JitWriter::Ud2()
 {
 	// NYI: ud2
@@ -411,6 +423,87 @@ void JitWriter::Compare(CompareType type, bool fSigned, bool f64)
 	}
 	SafePushCode(&cmpOp, sizeof(cmpOp));
 	SafePushCode(rgcodePost, _countof(rgcodePost));
+}
+
+void JitWriter::FloatCompare(CompareType type)
+{
+	// Note: Because cmpss only does less than compares we may swap the operands
+	bool fSwap = false;
+	switch (type)
+	{
+	case CompareType::GreaterThan:
+	case CompareType::GreaterThanEqual:
+		fSwap = true;
+	}
+
+	if (fSwap)
+	{
+		// movd xmm0, eax
+		// movd xmm1, [rdi]
+		static const uint8_t rgcodeMov[] = { 0x66, 0x0F, 0x6E, 0xC0, 0x66, 0x0F, 0x6E, 0x0F };
+		SafePushCode(rgcodeMov);
+	}
+	else
+	{
+		// movd xmm1, eax		; second operand
+		// movd xmm0, [rdi]		; first operand
+		static const uint8_t rgcodeMov[] = { 0x66, 0x0F, 0x6E, 0xC8, 0x66, 0x0F, 0x6E, 0x07 };
+		SafePushCode(rgcodeMov);
+	}
+
+	uint8_t cmpssImm;
+	switch (type)
+	{
+	default:
+		Verify(false);
+
+	case CompareType::LessThan:
+	case CompareType::GreaterThan:
+		cmpssImm = 1;
+		break;
+
+	case CompareType::LessThanEqual:
+	case CompareType::GreaterThanEqual:
+		cmpssImm = 2;
+		break;
+
+	case CompareType::Equal:
+		cmpssImm = 0;
+		break;
+
+	case CompareType::NotEqual:
+		cmpssImm = 4;
+		break;
+	}
+	// sub rdi, 4			; fixup stack for the op we just loaded
+	// cmpss xmm0, xmm1, imm8
+	static const uint8_t rgcodeCmpss[] = { 0x48, 0x83, 0xEF, 0x04, 0xF3, 0x0F, 0xC2, 0xC1 };
+	SafePushCode(rgcodeCmpss);
+	SafePushCode(uint8_t(cmpssImm));
+
+	// movd eax, xmm0
+	// and eax, 1
+	static const uint8_t rgcodeReduceFlag[] = { 0x66, 0x0F, 0x7E, 0xC0, 0x83, 0xE0, 0x01 };
+	SafePushCode(rgcodeReduceFlag);
+}
+
+void JitWriter::FloatNeg(bool f64)
+{
+	// the sign bit is the most significant in IEEE float format
+	if (f64)
+	{
+		// mov rcx, 0x8000000000000000
+		// xor rax, rcx
+		static const uint8_t rgcode[] = { 0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x48, 0x31, 0xC8 };
+		SafePushCode(rgcode);
+	}
+	else
+	{
+		// mov ecx, 0x80000000
+		// xor eax, ecx
+		static const uint8_t rgcode[] = { 0xB9, 0x00, 0x00, 0x00, 0x80, 0x31, 0xC8 };
+		SafePushCode(rgcode);
+	}
 }
 
 int32_t *JitWriter::JumpNIf(void *pvJmp)
@@ -657,8 +750,14 @@ void JitWriter::Select()
 	SafePushCode(rgcode, _countof(rgcode));
 }
 
-void JitWriter::FnEpilogue()
+void JitWriter::FnEpilogue(bool fRetVal)
 {
+	if (fRetVal)
+	{
+		// sub rdi, 8
+		static const uint8_t rgcodeSub[] = { 0x48, 0x83, 0xEF, 0x08 };
+		SafePushCode(rgcodeSub);
+	}
 	// ret
 	static const uint8_t rgcode[] = { 0xC3 };
 	SafePushCode(rgcode, _countof(rgcode));
@@ -742,7 +841,7 @@ void JitWriter::BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, 
 	// table targets
 	for (uint32_t itarget = 0; itarget < target_count; ++itarget)
 	{
-		uint32_t target = vectargets[itarget];
+		uint64_t target = vectargets[itarget];
 		SafePushCode(target);
 		auto &pairBlock = *(stackBlockTypeAddr.rbegin() + target);
 		SafePushCode(pairBlock.second);
@@ -820,6 +919,22 @@ void JitWriter::ExtendSigned32_64()
 	SafePushCode(rgcode);
 }
 
+void JitWriter::CountTrailingZeros(bool f64)
+{
+	if (f64)
+	{
+		// tzcnt rax, rax
+		static const uint8_t rgcode[] = { 0xF3, 0x48, 0x0F, 0xBC, 0xC0 };
+		SafePushCode(rgcode);
+	}
+	else
+	{
+		// tzcnt eax, eax
+		static const uint8_t rgcode[] = { 0xF3, 0x0F, 0xBC, 0xC0 };
+		SafePushCode(rgcode);
+	}
+}
+
 void JitWriter::CompileFn(uint32_t ifn)
 {
 	size_t cfnImports = 0;
@@ -880,6 +995,11 @@ void JitWriter::CompileFn(uint32_t ifn)
 			SafePushCode(rgcode, _countof(rgcode));
 			break;
 		}
+
+		case opcode::nop:
+			printf("nop\n");
+			break;
+
 		case opcode::block:
 		{
 			value_type type = safe_read_buffer<value_type>(&pop, &cb);
@@ -929,7 +1049,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("br_if %u\n", depth);
 			Verify(depth < stackBlockTypeAddr.size());
 			auto &pairBlock = *(stackBlockTypeAddr.rbegin() + depth);
-			
+
 			int32_t *pdeltaNoJmp = JumpNIf(nullptr);	// skip everything if we won't jump
 			// leave intermediate blocks (lie that we have a return so we don't do useless stack operations)
 			for (uint32_t idepth = 0; idepth < depth; ++idepth)
@@ -937,7 +1057,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 				LeaveBlock(true);
 			}
 			LeaveBlock(pairBlock.first != value_type::empty_block);
-			
+
 			int32_t *pdeltaFix = Jump(pairBlock.second);
 			if (pairBlock.second == nullptr)
 			{
@@ -961,7 +1081,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			int32_t cbSub = numeric_cast<int32_t>(stackVecFixupsRelative.size() * 8);
 			SafePushCode(rgcode);
 			SafePushCode(cbSub);
-			FnEpilogue();
+			FnEpilogue(m_pctxt->m_vecfn_types[itype]->fHasReturnValue);
 			break;
 		}
 
@@ -1012,7 +1132,20 @@ void JitWriter::CompileFn(uint32_t ifn)
 			PushC64(val);
 			break;
 		}
-
+		case opcode::f32_const:
+		{
+			float val = safe_read_buffer<float>(&pop, &cb);
+			printf("f32.const %f\n", val);
+			PushF32(val);
+			break;
+		}
+		case opcode::f64_const:
+		{
+			double val = safe_read_buffer<double>(&pop, &cb);
+			printf("f64.const %f\n", val);
+			PushF64(val);
+			break;
+		}
 		case opcode::i32_eqz:
 			printf("i32.eqz\n");
 			Eqz32();
@@ -1102,6 +1235,31 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::i64_ge_u:
 			printf("i64.ge_u\n");
 			Compare(CompareType::GreaterThanEqual, false /*fSigned*/, true /*f64*/);
+			break;
+
+		case opcode::f32_eq:
+			printf("f32.eq\n");
+			FloatCompare(CompareType::Equal);
+			break;
+		case opcode::f32_ne:
+			printf("f32.ne\n");
+			FloatCompare(CompareType::NotEqual);
+			break;
+		case opcode::f32_lt:
+			printf("f32.lt\n");
+			FloatCompare(CompareType::LessThan);
+			break;
+		case opcode::f32_gt:
+			printf("f32.gt\n");
+			FloatCompare(CompareType::GreaterThan);
+			break;
+		case opcode::f32_le:
+			printf("f32.le\n");
+			FloatCompare(CompareType::LessThanEqual);
+			break;
+		case opcode::f32_ge:
+			printf("f32.ge\n");
+			FloatCompare(CompareType::GreaterThanEqual);
 			break;
 
 		case opcode::i64_load32_u:
@@ -1264,6 +1422,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 			break;
 		}
 
+		case opcode::i32_ctz:
+			printf("i32.ctz\n");
+			CountTrailingZeros(false /*f64*/);
+			break;
 		case opcode::i32_popcnt:
 			printf("i32.popcnt\n");
 			Popcnt32();
@@ -1321,6 +1483,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 			LogicOp(LogicOperation::ShiftRightUnsigned);
 			break;
 
+		case opcode::i64_ctz:
+			printf("i64.ctz\n");
+			CountTrailingZeros(true /*f64*/);
+			break;
 		case opcode::i64_add:
 			printf("i64.add\n");
 			Add64();
@@ -1367,6 +1533,16 @@ void JitWriter::CompileFn(uint32_t ifn)
 			LogicOp64(LogicOperation::ShiftRightUnsigned);
 			break;
 
+		case opcode::f32_neg:
+			printf("f32.neg\n");
+			FloatNeg(false /*fDouble*/);
+			break;
+
+		case opcode::f64_neg:
+			printf("f64.neg\n");
+			FloatNeg(true /*fDouble*/);
+			break;
+
 		case opcode::i32_wrap_i64:
 			printf("i32.wrap/i64\n");
 			break;	// NOP because accessing eax, even when set as rax has the same behavior
@@ -1404,7 +1580,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 
 		}
 	}
-	FnEpilogue();
+	FnEpilogue(m_pctxt->m_vecfn_types[itype]->fHasReturnValue);
 
 	for (uint32_t ifnCompile : vecifnCompile)
 	{
@@ -1434,9 +1610,11 @@ void JitWriter::UnprotectRuntime()
 	Verify(VirtualProtect(m_pcodeStart, m_pexecPlaneCur - m_pcodeStart, PAGE_READWRITE, &dwT));
 }
 
-void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
+ExpressionService::Variant JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr, ExpressionService::Variant *rgargs, uint32_t cargs)
 {
 	uint64_t retV;
+	size_t itype = m_pctxt->m_vecfn_entries.at(ifn);
+	auto ptype = m_pctxt->m_vecfn_types[itype].get();
 	void *&pfn = reinterpret_cast<void**>(m_pexecPlane)[ifn];
 	if (pfn == nullptr)
 	{
@@ -1456,6 +1634,12 @@ void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
 		memcpy(m_pheap, m_pctxt->m_vecmem.data(), m_pctxt->m_vecmem.size());
 	}
 
+	// Process Arguments
+	for (uint32_t iarg = 0; iarg < cargs; ++iarg)
+	{
+		veclocals[iarg] = rgargs[iarg].val;
+	}
+
 	ExecutionControlBlock ectl;
 	ectl.pjitWriter = this;
 	ectl.pfnEntry = pfn;
@@ -1471,7 +1655,16 @@ void JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr)
 	
 	ProtectForRuntime();
 	retV = ExternCallFnASM(&ectl);
+	Verify(ectl.operandStack >= vecoperand.data());
+	Verify(ectl.localsStack >= veclocals.data());
 	UnprotectRuntime();
+
+	ExpressionService::Variant varRet;
+	
+	varRet.type = ptype->fHasReturnValue ? ptype->return_type : value_type::none;
+	if (ptype->fHasReturnValue)
+		varRet.val = ectl.retvalue;
+	return varRet;
 }
 
 extern "C" void CompileFn(ExecutionControlBlock *pectl, uint32_t ifn)

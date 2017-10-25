@@ -1,13 +1,14 @@
 #pragma once
 #include "JitWriter.h"
 #include "wasm_types.h"
+#include "ExpressionService.h"
 
 class WasmContext
 {
 	friend JitWriter;
 
 public:
-	void CallFunction(const char *szName);
+	ExpressionService::Variant CallFunction(const char *szName, ExpressionService::Variant *rgargs = nullptr, uint32_t cargs = 0);
 	void LoadModule(FILE *pfModule);
 
 protected:

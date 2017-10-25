@@ -3,7 +3,11 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 14
 VisualStudioVersion = 14.0.25420.1
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "webasmRT", "webasmRT\webasmRT.vcxproj", "{96DBA0B3-AD9D-447C-894E-CAB4A4033017}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libwasm", "webasmRT\webasmRT.vcxproj", "{96DBA0B3-AD9D-447C-894E-CAB4A4033017}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "wasmrt", "wasmrt\wasmrt.vcxproj", "{9BC81262-92E8-4048-831F-51CA0206069B}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "testhost", "testhost\testhost.vcxproj", "{D9E487AF-714E-49F4-B413-E0820AA59E95}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -21,6 +25,22 @@ Global
 		{96DBA0B3-AD9D-447C-894E-CAB4A4033017}.Release|x64.Build.0 = Release|x64
 		{96DBA0B3-AD9D-447C-894E-CAB4A4033017}.Release|x86.ActiveCfg = Release|Win32
 		{96DBA0B3-AD9D-447C-894E-CAB4A4033017}.Release|x86.Build.0 = Release|Win32
+		{9BC81262-92E8-4048-831F-51CA0206069B}.Debug|x64.ActiveCfg = Debug|x64
+		{9BC81262-92E8-4048-831F-51CA0206069B}.Debug|x64.Build.0 = Debug|x64
+		{9BC81262-92E8-4048-831F-51CA0206069B}.Debug|x86.ActiveCfg = Debug|Win32
+		{9BC81262-92E8-4048-831F-51CA0206069B}.Debug|x86.Build.0 = Debug|Win32
+		{9BC81262-92E8-4048-831F-51CA0206069B}.Release|x64.ActiveCfg = Release|x64
+		{9BC81262-92E8-4048-831F-51CA0206069B}.Release|x64.Build.0 = Release|x64
+		{9BC81262-92E8-4048-831F-51CA0206069B}.Release|x86.ActiveCfg = Release|Win32
+		{9BC81262-92E8-4048-831F-51CA0206069B}.Release|x86.Build.0 = Release|Win32
+		{D9E487AF-714E-49F4-B413-E0820AA59E95}.Debug|x64.ActiveCfg = Debug|x64
+		{D9E487AF-714E-49F4-B413-E0820AA59E95}.Debug|x64.Build.0 = Debug|x64
+		{D9E487AF-714E-49F4-B413-E0820AA59E95}.Debug|x86.ActiveCfg = Debug|Win32
+		{D9E487AF-714E-49F4-B413-E0820AA59E95}.Debug|x86.Build.0 = Debug|Win32
+		{D9E487AF-714E-49F4-B413-E0820AA59E95}.Release|x64.ActiveCfg = Release|x64
+		{D9E487AF-714E-49F4-B413-E0820AA59E95}.Release|x64.Build.0 = Release|x64
+		{D9E487AF-714E-49F4-B413-E0820AA59E95}.Release|x86.ActiveCfg = Release|Win32
+		{D9E487AF-714E-49F4-B413-E0820AA59E95}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

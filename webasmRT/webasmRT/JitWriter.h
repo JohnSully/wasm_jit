@@ -3,6 +3,7 @@
 #include "wasm_types.h"
 #include "Exceptions.h"
 #include "numeric_cast.h"
+#include "ExpressionService.h"
 
 extern "C" void CompileFn(struct ExecutionControlBlock *pectl, uint32_t ifn);
 class JitWriter
@@ -13,7 +14,7 @@ public:
 
 	void CompileFn(uint32_t ifn);
 
-	void ExternCallFn(uint32_t ifn, void *pvAddrMem);
+	ExpressionService::Variant ExternCallFn(uint32_t ifn, void *pvAddrMem, ExpressionService::Variant *rgargs, uint32_t cargs);
 
 	// Psuedo private callbacks from ASM
 	uint64_t JitWriter::CReentryFn(int ifn, uint64_t *pvArgs, uint8_t *pvMemBase, ExecutionControlBlock *pecb);
@@ -84,12 +85,16 @@ private:
 	void Popcnt32();
 	void PushC32(uint32_t c);
 	void PushC64(uint64_t c);
+	void PushF32(float c);
+	void PushF64(double c);
 	void SetLocal(uint32_t idx, bool fPop);
 	void GetLocal(uint32_t idx);
 	void GetGlobal(uint32_t idx);
 	void SetGlobal(uint32_t idx);
+	void CountTrailingZeros(bool f64);
 	void Select();
 	void Compare(CompareType type, bool fSigned, bool f64);
+	void FloatCompare(CompareType type);
 	void Eqz32();
 	void Eqz64();
 	void LogicOp(LogicOperation op);
@@ -97,10 +102,12 @@ private:
 	int32_t *JumpNIf(void *addr);	// returns a pointer to the offset encoded in the instruction for later adjustment
 	int32_t *Jump(void *addr);
 	void CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCallee, bool fReturnValue, bool fIndirect);
-	void FnEpilogue();
+	void FnEpilogue(bool fRetVal);
 	void FnPrologue(uint32_t clocals, uint32_t cargs);
 	void BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, const std::vector<std::pair<value_type, void*>> &stackBlockTypeAddr, std::vector<std::vector<int32_t*>> &stackVecFixups, std::vector<std::vector<void**>> &stackVecFixupsAbsolute);
 	void ExtendSigned32_64();
+	void FloatNeg(bool fDouble);
+
 	void Ud2();
 
 	void EnterBlock();
