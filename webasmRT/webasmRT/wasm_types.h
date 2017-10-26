@@ -232,17 +232,22 @@ enum class opcode : uint8_t
 
 	i64_clz = 0x79,
 	i64_ctz = 0x7a,
+	i64_popcnt = 0x7b,
 	i64_add = 0x7c,
 	i64_sub = 0x7d,
 	i64_mul = 0x7e,
 	i64_div_s = 0x7f,
 	i64_div_u = 0x80,
 	i64_rem_s = 0x81,
+	i64_rem_u = 0x82,
 	i64_and = 0x83,
 	i64_or = 0x84,
 	i64_xor = 0x85,
 	i64_shl = 0x86,
+	i64_shr_s = 0x87,
 	i64_shr_u = 0x88,
+	i64_rotl = 0x89,
+	i64_rotr = 0x8a,
 
 	f32_neg = 0x8c,
 

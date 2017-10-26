@@ -85,6 +85,7 @@ private:
 	void Mul64();
 	void Div(bool fSigned, bool fModulo, bool f64);
 	void Popcnt32();
+	void Popcnt64();
 	void PushC32(uint32_t c);
 	void PushC64(uint64_t c);
 	void PushF32(float c);

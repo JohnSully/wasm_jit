@@ -231,7 +231,7 @@ void JitWriter::Add64()
 
 void JitWriter::Sub64()
 {
-	_PopSecondParam();
+	_PopSecondParam(true);
 	// sub rax, rcx
 	static const uint8_t rgcode[] = { 0x48, 0x29, 0xC8 };
 	SafePushCode(rgcode);
@@ -243,6 +243,14 @@ void JitWriter::Popcnt32()
 	// popcnt eax, [rdi]
 	const uint8_t rgcode[] = { 0x89, 0x07, 0xF3, 0x0F, 0xB8, 0x07 };
 	SafePushCode(rgcode, _countof(rgcode));
+}
+
+void JitWriter::Popcnt64()
+{
+	// mov[rdi], rax
+	// popcnt rax, qword ptr[rdi]
+	const uint8_t rgcode[] = { 0x48, 0x89, 0x07, 0xF3, 0x48, 0x0F, 0xB8, 0x07 };
+	SafePushCode(rgcode);
 }
 
 void JitWriter::PushC32(uint32_t c)
@@ -716,6 +724,8 @@ void JitWriter::LogicOp64(LogicOperation op)
 	case LogicOperation::ShiftLeft:
 	case LogicOperation::ShiftRight:
 	case LogicOperation::ShiftRightUnsigned:
+	case LogicOperation::RotateLeft:
+	case LogicOperation::RotateRight:
 		fSwapParams = true;
 	}
 	_PopSecondParam(fSwapParams);
@@ -738,9 +748,19 @@ void JitWriter::LogicOp64(LogicOperation op)
 		// shl rax, cl
 		rgcode = "\x48\xD3\xE0";
 		break;
+	case LogicOperation::ShiftRight:
+		// sar rax, cl
+		rgcode = "\x48\xD3\xF8";
+		break;
 	case LogicOperation::ShiftRightUnsigned:
 		// shr rax, cl
 		rgcode = "\x48\xD3\xE8";
+		break;
+	case LogicOperation::RotateLeft:
+		rgcode = "\x48\xD3\xC0";
+		break;
+	case LogicOperation::RotateRight:
+		rgcode = "\x48\xD3\xC8";
 		break;
 	default:
 		Verify(false);
@@ -964,8 +984,6 @@ void JitWriter::CountLeadingZeros(bool f64)
 
 void JitWriter::Div(bool fSigned, bool fModulo, bool f64)
 {
-	Verify(!f64);
-
 	if (fSigned && fModulo)
 	{
 		// To satisify the wasm spec and prevent overflow exceptions convert the divisor to its absolute value
@@ -975,16 +993,45 @@ void JitWriter::Div(bool fSigned, bool fModulo, bool f64)
 		//		cdq
 		//		xor eax, edx
 		//		sub eax, edx
-		static const uint8_t rgcodeFancy[] = { 0x99, 0x31, 0xD0, 0x29, 0xD0 };
-		SafePushCode(rgcodeFancy);
+		if (f64)
+		{
+			static const uint8_t rgcodeFancy[] = { 0x48, 0x99, 0x48, 0x31, 0xD0, 0x48, 0x29, 0xD0 };
+			SafePushCode(rgcodeFancy);
+		}
+		else
+		{
+			static const uint8_t rgcodeFancy[] = { 0x99, 0x31, 0xD0, 0x29, 0xD0 };
+			SafePushCode(rgcodeFancy);
+		}
 	}
 
-	//	xchg eax, dword ptr [rdi]		; operands in the wrong order
-	static const uint8_t rgcodeXchg[] = { 0x87, 0x47, 0xF8 };
-	SafePushCode(rgcodeXchg);
+	// sub rdi, 8 - pop off one of our operands.  Do this early so we don't have to offset our memory accesses below
+	static const uint8_t rgcodeSubRdi[] = { 0x48, 0x83, 0xEF, 0x08 };
+	SafePushCode(rgcodeSubRdi);
+
+	if (f64)
+	{
+		//	xchg rax, qword ptr [rdi]		; operands in the wrong order
+		static const uint8_t rgcodeXchg[] = { 0x48, 0x87, 0x07 };
+		SafePushCode(rgcodeXchg);
+	}
+	else
+	{
+		//	xchg eax, dword ptr [rdi]		; operands in the wrong order
+		static const uint8_t rgcodeXchg[] = { 0x87, 0x07 };
+		SafePushCode(rgcodeXchg);
+	}
 	if (fSigned)
 	{
-		SafePushCode(uint8_t(0x99));	// cdq to load edx with the sign extension
+		if (f64)
+		{
+			static const uint8_t rgcodeCqo[] = { 0x48, 0x99 };	// cqo to load rdx with the sign extension
+			SafePushCode(rgcodeCqo);
+		}
+		else
+		{
+			SafePushCode(uint8_t(0x99));	// cdq to load edx with the sign extension
+		}
 	}
 	else
 	{
@@ -993,24 +1040,25 @@ void JitWriter::Div(bool fSigned, bool fModulo, bool f64)
 		SafePushCode(rgcodeClearEdx);
 	}
 
+	if (f64)
+		SafePushCode(uint8_t(0x48));	// rex prefix to make the following div instruction a 64-bit op
 	if (fSigned)
 	{
-		//  idiv dword ptr [rdi-8]
-		static const uint8_t rgcodeDiv[] = { 0xF7, 0x7F, 0xF8 };
+		//  idiv dword ptr [rdi]
+		static const uint8_t rgcodeDiv[] = { 0xF7, 0x3F };
 		SafePushCode(rgcodeDiv);
 	}
 	else
 	{
 		// div dword ptr [rdi]
-		static const uint8_t rgcodeDiv[] = { 0xF7, 0x77, 0xF8 };
+		static const uint8_t rgcodeDiv[] = { 0xF7, 0x37 };
 		SafePushCode(rgcodeDiv);
 	}
-	// sub rdi, 8
-	static const uint8_t rgcodeSubRdi[] = { 0x48, 0x83, 0xEF, 0x08 };
-	SafePushCode(rgcodeSubRdi);
 
 	if (fModulo)
 	{
+		if (f64)
+			SafePushCode(uint8_t(0x48));	// REX prefix to convert to 64-bit registers below
 		// take the remainder that's in edx
 		// mov eax, edx { 0x89, 0xD0 }
 		static const uint8_t rgcodeMovEaxEdx[] = { 0x89, 0xD0 };
@@ -1576,9 +1624,17 @@ void JitWriter::CompileFn(uint32_t ifn)
 			LogicOp(LogicOperation::RotateRight);
 			break;
 
+		case opcode::i64_clz:
+			printf("i64.clz\n");
+			CountLeadingZeros(true /*f64*/);
+			break;
 		case opcode::i64_ctz:
 			printf("i64.ctz\n");
 			CountTrailingZeros(true /*f64*/);
+			break;
+		case opcode::i64_popcnt:
+			printf("i64.popcnt\n");
+			Popcnt64();
 			break;
 		case opcode::i64_add:
 			printf("i64.add\n");
@@ -1592,18 +1648,21 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("i64.mul\n");
 			Mul64();
 			break;
-
 		case opcode::i64_div_s:
 			printf("i64.div_s\n");
-			Ud2();
+			Div(true /*fSigned*/, false /*fModulo*/, true /*f64*/);
 			break;
 		case opcode::i64_div_u:
 			printf("i64.div_u\n");
-			Ud2();
+			Div(false /*fSigned*/, false /*fModulo*/, true /*f64*/);
 			break;
 		case opcode::i64_rem_s:
 			printf("i64.rem_s\n");
-			Ud2();
+			Div(true /*fSigned*/, true /*fModulo*/, true /*f64*/);
+			break;
+		case opcode::i64_rem_u:
+			printf("i64.rem_u\n");
+			Div(false /*fSigned*/, true /*fModulo*/, true /*f64*/);
 			break;
 		case opcode::i64_and:
 			printf("i64.and\n");
@@ -1621,9 +1680,21 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("i64.shl\n");
 			LogicOp64(LogicOperation::ShiftLeft);
 			break;
+		case opcode::i64_shr_s:
+			printf("i64.shr_s\n");
+			LogicOp64(LogicOperation::ShiftRight);
+			break;
 		case opcode::i64_shr_u:
 			printf("i64.shr_u\n");
 			LogicOp64(LogicOperation::ShiftRightUnsigned);
+			break;
+		case opcode::i64_rotl:
+			printf("i64.rotl\n");
+			LogicOp64(LogicOperation::RotateLeft);
+			break;
+		case opcode::i64_rotr:
+			printf("i64.rotr\n");
+			LogicOp64(LogicOperation::RotateRight);
 			break;
 
 		case opcode::f32_neg:
