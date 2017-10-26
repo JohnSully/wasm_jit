@@ -109,7 +109,9 @@ size_t ExpressionService::CchEatExpression(const char *sz, size_t cch, _Out_ Var
 				case value_type::i64:
 					pvalOut->val = static_cast<uint64_t>(std::stoll(strVal, nullptr, base));
 					if (pvalOut->type == value_type::i32)
-						Verify(static_cast<int64_t>(pvalOut->val) == static_cast<int32_t>(pvalOut->val));
+					{
+						pvalOut->val = (uint32_t)pvalOut->val;
+					}
 					break;
 
 				case value_type::f32:

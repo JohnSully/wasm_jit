@@ -58,6 +58,8 @@ private:
 		ShiftLeft,
 		ShiftRight,
 		ShiftRightUnsigned,
+		RotateLeft,
+		RotateRight,
 	};
 
 	int32_t RelAddrPfnVector(uint32_t ifn, uint32_t opSize) const
@@ -81,7 +83,7 @@ private:
 	void Add64();
 	void Sub64();
 	void Mul64();
-	void Div64();
+	void Div(bool fSigned, bool fModulo, bool f64);
 	void Popcnt32();
 	void PushC32(uint32_t c);
 	void PushC64(uint64_t c);
@@ -92,6 +94,7 @@ private:
 	void GetGlobal(uint32_t idx);
 	void SetGlobal(uint32_t idx);
 	void CountTrailingZeros(bool f64);
+	void CountLeadingZeros(bool f64);
 	void Select();
 	void Compare(CompareType type, bool fSigned, bool f64);
 	void FloatCompare(CompareType type);

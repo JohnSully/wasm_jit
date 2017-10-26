@@ -99,6 +99,7 @@ void ProcessInvoke(const char *rgch, size_t cch)
 		Verify(false);	// should never get here
 	}
 
+	printf("Invoke: %s\n", strFnExec.c_str());
 	g_variantLastExec = g_spctxtLast->CallFunction(strFnExec.c_str(), vecargs.data(), numeric_cast<uint32_t>(vecargs.size()));
 }
 
@@ -166,7 +167,7 @@ void ProcessCommand(const std::string &str, FILE *pf, off_t offsetStart, off_t o
 	}
 	else if (str == "assert_trap")
 	{
-		assert(false);
+		//assert(false);
 	}
 	else if (str == "assert_invalid" || str == "assert_malformed")
 	{
@@ -225,7 +226,7 @@ int main(int argc, char *argv[])
 				}
 				else
 				{
-					fNestCmd = stackstrCmd.top() != "module" && stackstrCmd.top() != "assert_invalid" && stackstrCmd.top() != "assert_malformed";
+					fNestCmd = stackstrCmd.top() != "module" && stackstrCmd.top() != "assert_invalid" && stackstrCmd.top() != "assert_malformed" && stackstrCmd.top() != "assert_trap";
 					stackMode.pop();
 					mode = stackMode.top();
 				}

@@ -415,7 +415,7 @@ void JitWriter::Compare(CompareType type, bool fSigned, bool f64)
 		if (fSigned)
 			cmpOp = 0x7F;	// JG rel8
 		else
-			cmpOp = 0x74;	// JE rel8
+			cmpOp = 0x77;	// JA rel8
 		break;
 
 	default:
@@ -661,6 +661,8 @@ void JitWriter::LogicOp(LogicOperation op)
 	case LogicOperation::ShiftLeft:
 	case LogicOperation::ShiftRight:
 	case LogicOperation::ShiftRightUnsigned:
+	case LogicOperation::RotateLeft:
+	case LogicOperation::RotateRight:
 		fSwapParams = true;
 	}
 	_PopSecondParam(fSwapParams);
@@ -691,6 +693,15 @@ void JitWriter::LogicOp(LogicOperation op)
 		// shr eax, cl
 		rgcode = "\xD3\xE8";
 		break;
+	case LogicOperation::RotateLeft:
+		// rol eax, cl
+		rgcode = "\xD3\xC0";
+		break;
+	case LogicOperation::RotateRight:
+		// ror eax, cl
+		rgcode = "\xD3\xC8";
+		break;
+
 	default:
 		Verify(false);
 	}
@@ -932,6 +943,78 @@ void JitWriter::CountTrailingZeros(bool f64)
 		// tzcnt eax, eax
 		static const uint8_t rgcode[] = { 0xF3, 0x0F, 0xBC, 0xC0 };
 		SafePushCode(rgcode);
+	}
+}
+
+void JitWriter::CountLeadingZeros(bool f64)
+{
+	if (f64)
+	{
+		// lzcnt rax, rax
+		static const uint8_t rgcode[] = { 0xF3, 0x48, 0x0F, 0xBD, 0xC0 };
+		SafePushCode(rgcode);
+	}
+	else
+	{
+		// lzcnt eax, eax
+		static const uint8_t rgcode[] = { 0xF3, 0x0F, 0xBD, 0xC0 };
+		SafePushCode(rgcode);
+	}
+}
+
+void JitWriter::Div(bool fSigned, bool fModulo, bool f64)
+{
+	Verify(!f64);
+
+	if (fSigned && fModulo)
+	{
+		// To satisify the wasm spec and prevent overflow exceptions convert the divisor to its absolute value
+		//  do this before the xchg below so the divisor is already in eax
+
+		// Fancy branchless abs(eax):
+		//		cdq
+		//		xor eax, edx
+		//		sub eax, edx
+		static const uint8_t rgcodeFancy[] = { 0x99, 0x31, 0xD0, 0x29, 0xD0 };
+		SafePushCode(rgcodeFancy);
+	}
+
+	//	xchg eax, dword ptr [rdi]		; operands in the wrong order
+	static const uint8_t rgcodeXchg[] = { 0x87, 0x47, 0xF8 };
+	SafePushCode(rgcodeXchg);
+	if (fSigned)
+	{
+		SafePushCode(uint8_t(0x99));	// cdq to load edx with the sign extension
+	}
+	else
+	{
+		// xor edx, edx { 0x31, 0xD2 }
+		static const uint8_t rgcodeClearEdx[] = { 0x31, 0xD2 };
+		SafePushCode(rgcodeClearEdx);
+	}
+
+	if (fSigned)
+	{
+		//  idiv dword ptr [rdi-8]
+		static const uint8_t rgcodeDiv[] = { 0xF7, 0x7F, 0xF8 };
+		SafePushCode(rgcodeDiv);
+	}
+	else
+	{
+		// div dword ptr [rdi]
+		static const uint8_t rgcodeDiv[] = { 0xF7, 0x77, 0xF8 };
+		SafePushCode(rgcodeDiv);
+	}
+	// sub rdi, 8
+	static const uint8_t rgcodeSubRdi[] = { 0x48, 0x83, 0xEF, 0x08 };
+	SafePushCode(rgcodeSubRdi);
+
+	if (fModulo)
+	{
+		// take the remainder that's in edx
+		// mov eax, edx { 0x89, 0xD0 }
+		static const uint8_t rgcodeMovEaxEdx[] = { 0x89, 0xD0 };
+		SafePushCode(rgcodeMovEaxEdx);
 	}
 }
 
@@ -1422,6 +1505,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 			break;
 		}
 
+		case opcode::i32_clz:
+			printf("i32.clz");
+			CountLeadingZeros(false /*f64*/);
+			break;
 		case opcode::i32_ctz:
 			printf("i32.ctz\n");
 			CountTrailingZeros(false /*f64*/);
@@ -1444,19 +1531,17 @@ void JitWriter::CompileFn(uint32_t ifn)
 			break;
 		case opcode::i32_div_s:
 			printf("i32.div_s\n");
-			Ud2();
+			Div(true /*fSigned*/, false /*fModulo*/, false /*f64*/);
 			break;
 		case opcode::i32_div_u:
 			printf("i32.div_u\n");
-			Ud2();
+			Div(false /*fSigned*/, false /*fModulo*/, false /*f64*/);
 			break;
 		case opcode::i32_rem_s:
-			printf("i32.rem_s\n");
-			Ud2();
+			Div(true /*fSigned*/, true /*fModulo*/, false /*f64*/);
 			break;
 		case opcode::i32_rem_u:
-			printf("i32.rem_u\n");
-			Ud2();
+			Div(false /*fSigned*/, true /*fModulo*/, false /*f64*/);
 			break;
 		case opcode::i32_and:
 			printf("i32.and\n");
@@ -1481,6 +1566,14 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::i32_shr_u:
 			printf("i32.shr_u\n");
 			LogicOp(LogicOperation::ShiftRightUnsigned);
+			break;
+		case opcode::i32_rotl:
+			printf("i32.rotl\n");
+			LogicOp(LogicOperation::RotateLeft);
+			break;
+		case opcode::i32_rotr:
+			printf("i32.rotr\n");
+			LogicOp(LogicOperation::RotateRight);
 			break;
 
 		case opcode::i64_ctz:

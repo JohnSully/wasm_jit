@@ -121,6 +121,7 @@ enum class opcode : uint8_t
 
 	block = 0x02,
 	loop = 0x03,
+	IF = 0x04,
 
 	br = 0x0c,
 	br_if = 0x0d,
@@ -226,7 +227,10 @@ enum class opcode : uint8_t
 	i32_shl = 0x74,
 	i32_shr_s = 0x75,
 	i32_shr_u = 0x76,
+	i32_rotl = 0x77,
+	i32_rotr = 0x78,
 
+	i64_clz = 0x79,
 	i64_ctz = 0x7a,
 	i64_add = 0x7c,
 	i64_sub = 0x7d,
