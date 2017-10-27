@@ -113,7 +113,6 @@ enum class elem_type : uint8_t
 	anyfunc = 0x70,
 };
 
-// DO NOT ADD opcodes until they are implemented
 enum class opcode : uint8_t
 {
 	unreachable = 0x00,
@@ -122,6 +121,7 @@ enum class opcode : uint8_t
 	block = 0x02,
 	loop = 0x03,
 	IF = 0x04,
+	ELSE = 0x05,
 
 	br = 0x0c,
 	br_if = 0x0d,
@@ -254,8 +254,26 @@ enum class opcode : uint8_t
 	f64_neg = 0x9a,
 
 	i32_wrap_i64 = 0xa7,
+	i32_trunc_s_f32 = 0xa8,
+	i32_trunc_u_f32 = 0xa9,
+	i32_trunc_s_f64 = 0xaa,
+	i32_trunc_u_f64 = 0xab,
 	i64_extend_s_i32 = 0xac,
-	i64_extend_u32 = 0xad,
+	i64_extend_u_i32 = 0xad,
+	i64_trunc_s_f32 = 0xae,
+	i64_trunc_u_f32 = 0xaf,
+	i64_trunc_s_f64 = 0xb0,
+	i64_trunc_u_f64 = 0xb1,
+	f32_convert_s_i32 = 0xb2,
+	f32_convert_u_i32 = 0xb3,
+	f32_convert_s_i64 = 0xb4,
+	f32_convert_u_i64 = 0xb5,
+	f32_demote_f64 = 0xb6,
+	f64_convert_s_i32 = 0xb7,
+	f64_convert_u_i32 = 0xb8,
+	f64_convert_s_i64 = 0xb9,
+	f64_convert_u_i64 = 0xba,
+	f64_promote_f32 = 0xbb,
 
 	end = 0x0b,
 };

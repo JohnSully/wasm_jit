@@ -59,6 +59,7 @@ class RunTests(unittest.TestCase):
     if expectedExitCode != 0:
       return
 
+    return
     # Convert to binary and validate again
     wasmPath = self._auxFile(outputPath + ".bin.wast")
     logPath = self._auxFile(wasmPath + ".log")
@@ -86,7 +87,6 @@ class RunTests(unittest.TestCase):
     self._runCommand(('%s -d "%s" -o "%s"') % (wasmCommand, inputPath, jsPath), logPath)
     if jsCommand != None:
       self._runCommand(('%s "%s"') % (jsCommand, jsPath), logPath)
-
 
 if __name__ == "__main__":
   if not os.path.exists(outputDir):

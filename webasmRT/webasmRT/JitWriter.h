@@ -90,6 +90,7 @@ private:
 	void PushC64(uint64_t c);
 	void PushF32(float c);
 	void PushF64(double c);
+	void Convert(value_type typeDst, value_type typeSrc, bool fSigned);
 	void SetLocal(uint32_t idx, bool fPop);
 	void GetLocal(uint32_t idx);
 	void GetGlobal(uint32_t idx);
@@ -99,6 +100,7 @@ private:
 	void Select();
 	void Compare(CompareType type, bool fSigned, bool f64);
 	void FloatCompare(CompareType type);
+	void DoubleCompare(CompareType type);
 	void Eqz32();
 	void Eqz64();
 	void LogicOp(LogicOperation op);
@@ -115,6 +117,7 @@ private:
 	void Ud2();
 
 	void EnterBlock();
+	int32_t *EnterIF();
 	void LeaveBlock(bool fHasReturn);
 
 	void ProtectForRuntime();
@@ -127,7 +130,11 @@ private:
 	uint8_t *m_pexecPlaneMax = nullptr;
 	void **m_pfnCallIndirectShim = nullptr;
 	void **m_pfnBranchTable = nullptr;
+	void **m_pfnU64ToF64 = nullptr;
 	uint64_t *m_pGlobalsStart = nullptr;
 	void *m_pheap = nullptr;
 	size_t m_cfn;
+
+	std::vector<uint64_t> m_vecoperand;
+	std::vector<uint64_t> m_veclocals;
 };

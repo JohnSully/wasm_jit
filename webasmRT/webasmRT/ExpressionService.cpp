@@ -116,14 +116,32 @@ size_t ExpressionService::CchEatExpression(const char *sz, size_t cch, _Out_ Var
 
 				case value_type::f32:
 				{
-					float valT = std::stof(strVal);
-					pvalOut->val = *reinterpret_cast<int32_t*>(&valT);
+					if (base != 10)
+					{
+						uint64_t ival = std::stoull(strVal, nullptr, base);
+						float valT = (float)ival;
+						pvalOut->val = *reinterpret_cast<int32_t*>(&valT);
+					}
+					else
+					{
+						float valT = std::stof(strVal);
+						pvalOut->val = *reinterpret_cast<int32_t*>(&valT);
+					}
 					break;
 				}
 				case value_type::f64:
 				{
-					double valT = std::stod(strVal);
-					pvalOut->val = *reinterpret_cast<int64_t*>(&valT);
+					if (base != 10)
+					{
+						uint64_t ival = std::stoull(strVal, nullptr, base);
+						double valT = (double)ival;
+						pvalOut->val = *reinterpret_cast<int64_t*>(&valT);
+					}
+					else
+					{
+						double valT = std::stod(strVal);
+						pvalOut->val = *reinterpret_cast<int64_t*>(&valT);
+					}
 					break;
 				}
 				default:

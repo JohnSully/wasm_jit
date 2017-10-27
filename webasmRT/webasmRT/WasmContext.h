@@ -24,6 +24,7 @@ protected:
 	void load_imports(const uint8_t *rgbPayload, size_t cbData);
 	void load_elements(const uint8_t *rgbPayload, size_t cbData);
 	void load_data(const uint8_t *rgbPayload, size_t cbData);
+	void load_start(const uint8_t *rgbPayload, size_t cbData);
 	bool load_section(FILE *pf);
 
 	void InitializeMemory();
@@ -46,6 +47,9 @@ protected:
 	std::vector<export_entry> m_vecexports;
 	std::vector<FunctionCodeEntry::unique_pfne_ptr> m_vecfn_code;
 	std::vector<uint8_t> m_vecmem;
+
+	bool m_fStartFn = false;
+	uint32_t m_ifnStart = 0;
 
 	std::unique_ptr<JitWriter> m_spjitwriter;
 };

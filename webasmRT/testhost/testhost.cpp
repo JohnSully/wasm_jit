@@ -145,12 +145,17 @@ void ProcessCommand(const std::string &str, FILE *pf, off_t offsetStart, off_t o
 		strcat_s(szParams, " --no-check -o ");
 		strcat_s(szParams, szPathWasm);
 		int res = RunProgram("wat2wasm", szParams);
-		Verify(res == EXIT_SUCCESS, "Failed to compile test module");
-
-		g_spctxtLast = std::make_unique<WasmContext>();
-		FILE *pfWasm = fopen(szPathWasm, "rb");
-		g_spctxtLast->LoadModule(pfWasm);
-		fclose(pfWasm);
+		if (res == EXIT_SUCCESS)
+		{
+			g_spctxtLast = std::make_unique<WasmContext>();
+			FILE *pfWasm = fopen(szPathWasm, "rb");
+			g_spctxtLast->LoadModule(pfWasm);
+			fclose(pfWasm);
+		}
+		else
+		{
+			g_spctxtLast = nullptr;
+		}
 	}
 	else if (str == "invoke")
 	{
@@ -169,7 +174,7 @@ void ProcessCommand(const std::string &str, FILE *pf, off_t offsetStart, off_t o
 	{
 		//assert(false);
 	}
-	else if (str == "assert_invalid" || str == "assert_malformed")
+	else if (str == "assert_invalid" || str == "assert_malformed" || str == "assert_exhaustion")
 	{
 		//Unsupported tests
 	}
@@ -226,12 +231,12 @@ int main(int argc, char *argv[])
 				}
 				else
 				{
-					fNestCmd = stackstrCmd.top() != "module" && stackstrCmd.top() != "assert_invalid" && stackstrCmd.top() != "assert_malformed" && stackstrCmd.top() != "assert_trap";
+					fNestCmd = stackstrCmd.top() != "module" && stackstrCmd.top() != "assert_invalid" && stackstrCmd.top() != "assert_malformed" && stackstrCmd.top() != "assert_trap" && stackstrCmd.top() != "assert_exhaustion";
 					stackMode.pop();
 					mode = stackMode.top();
 				}
 			}
-			
+
 			if (mode == ParseMode::Quote)
 			{
 				if (*pch == '"' && !fEscapeLast)
@@ -270,7 +275,7 @@ int main(int argc, char *argv[])
 				case ')':
 					if (cblock == 1 || fNestCmd)
 					{
-						off_t offsetCur = ftell(pf) - (pchMax - (pch+1));
+						off_t offsetCur = ftell(pf) - (pchMax - (pch + 1));
 						ProcessCommand(stackstrCmd.top(), pf, stackoffsetBlockStart.top(), offsetCur);
 						stackstrCmd.pop();
 						stackoffsetBlockStart.pop();
@@ -290,5 +295,6 @@ int main(int argc, char *argv[])
 	stackMode.pop();
 	assert(stackMode.empty());
 	fclose(pf);
+
 	return EXIT_SUCCESS;
 }

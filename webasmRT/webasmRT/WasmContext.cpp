@@ -281,6 +281,12 @@ void WasmContext::load_data(const uint8_t *rgbPayload, size_t cbData)
 	}
 }
 
+void WasmContext::load_start(const uint8_t *rgbPayload, size_t cbData)
+{
+	m_ifnStart = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
+	m_fStartFn = true;
+}
+
 void WasmContext::InitializeMemory()
 {
 	// find out memory export
@@ -368,6 +374,9 @@ bool WasmContext::load_section(FILE *pf)
 	case section_types::Data:
 		load_data(vecpayload.data(), vecpayload.size());
 		break;
+	case section_types::Start:
+		load_start(vecpayload.data(), vecpayload.size());
+		break;
 
 	default:
 		throw std::string("unknown section");
@@ -420,10 +429,19 @@ void WasmContext::LoadModule(FILE *pf)
 
 	void *pvStartAddr = nullptr;
 #ifdef _DEBUG
-	pvStartAddr = (void*)0xA0000000000;	// Note we want execution to be at a random address in ship to make exploiting flaws harder, for debug its nice to always be the same
+	pvStartAddr = (void*)0xb0000000000;	// Note we want execution to be at a random address in ship to make exploiting flaws harder, for debug its nice to always be the same
 #endif
 	uint8_t *rgexec = (uint8_t*)VirtualAlloc(pvStartAddr, cbExecPlane, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (rgexec == nullptr && pvStartAddr != nullptr)
+	{
+		rgexec = (uint8_t*)VirtualAlloc(nullptr, cbExecPlane, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	}
 	memset(rgexec, 0xF4, cbExecPlane);	// fill with hlts (because 00 is effectively a NOP)
 	m_spjitwriter = std::make_unique<JitWriter>(this, rgexec, cbExecPlane, m_vecfn_entries.size(), m_vecglbls.size());
 	LinkImports();
+
+	if (m_fStartFn)
+	{
+		m_spjitwriter->ExternCallFn(m_ifnStart, m_vecmem.data(), nullptr, 0);
+	}
 }

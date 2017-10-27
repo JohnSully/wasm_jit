@@ -77,23 +77,6 @@
 (invoke "inc")
 (assert_return (invoke "get") (i32.const 70))
 
-(module
-  (func $print_i32 (import "spectest" "print") (param i32))
-  (func $main (call $print_i32 (i32.const 1)))
-  (start 1)
-)
-
-(module
-  (func $print_i32 (import "spectest" "print") (param i32))
-  (func $main (call $print_i32 (i32.const 2)))
-  (start $main)
-)
-
-(module
-  (func $print (import "spectest" "print"))
-  (start $print)
-)
-
 (assert_trap
   (module (func $main (unreachable)) (start $main))
   "unreachable"
