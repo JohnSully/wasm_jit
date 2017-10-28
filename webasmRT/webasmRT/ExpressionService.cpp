@@ -11,7 +11,22 @@ size_t ExpressionService::CbEatExpression(const uint8_t *rgb, size_t cb, _Out_ V
 	{
 	case opcode::i32_const:
 		pvariantOut->type = value_type::i32;
-		pvariantOut->val = safe_read_buffer<varuint32>(&rgb, &cb);
+		pvariantOut->val = safe_read_buffer<varint32>(&rgb, &cb);
+		break;
+	case opcode::i64_const:
+		pvariantOut->type = value_type::i64;
+		pvariantOut->val = safe_read_buffer<varint64>(&rgb, &cb);
+		break;
+
+	case opcode::f32_const:
+		pvariantOut->type = value_type::f32;
+		pvariantOut->val = 0;
+		*reinterpret_cast<float*>(&pvariantOut->val) = safe_read_buffer<float>(&rgb, &cb);
+		break;
+
+	case opcode::f64_const:
+		pvariantOut->type = value_type::f64;
+		*reinterpret_cast<double*>(&pvariantOut->val) = safe_read_buffer<double>(&rgb, &cb);
 		break;
 
 	default:
@@ -96,52 +111,35 @@ size_t ExpressionService::CchEatExpression(const char *sz, size_t cch, _Out_ Var
 			if (*pchCur == ')')
 			{
 				Verify(strVal.size() > 0);
-				int base = 10;
-				if (strVal.size() > 2 && strVal[0] == '0' && strVal[1] == 'x')
-				{
-					// Hex
-					base = 16;
-					strVal = std::string(strVal.begin() + 2, strVal.end());
-				}
 				switch (pvalOut->type)
 				{
 				case value_type::i32:
 				case value_type::i64:
+				{
+					int base = 10;
+					if (strVal.size() > 2 && strVal[0] == '0' && strVal[1] == 'x')
+					{
+						// Hex
+						base = 16;
+						strVal = std::string(strVal.begin() + 2, strVal.end());
+					}
 					pvalOut->val = static_cast<uint64_t>(std::stoull(strVal, nullptr, base));
 					if (pvalOut->type == value_type::i32)
 					{
 						pvalOut->val = (uint32_t)pvalOut->val;
 					}
 					break;
-
+				}
 				case value_type::f32:
 				{
-					if (base != 10)
-					{
-						uint64_t ival = std::stoull(strVal, nullptr, base);
-						float valT = (float)ival;
-						pvalOut->val = *reinterpret_cast<int32_t*>(&valT);
-					}
-					else
-					{
-						float valT = std::stof(strVal);
-						pvalOut->val = *reinterpret_cast<int32_t*>(&valT);
-					}
+					float valT = std::stof(strVal);
+					pvalOut->val = *reinterpret_cast<uint32_t*>(&valT);
 					break;
 				}
 				case value_type::f64:
 				{
-					if (base != 10)
-					{
-						uint64_t ival = std::stoull(strVal, nullptr, base);
-						double valT = (double)ival;
-						pvalOut->val = *reinterpret_cast<int64_t*>(&valT);
-					}
-					else
-					{
-						double valT = std::stod(strVal);
-						pvalOut->val = *reinterpret_cast<int64_t*>(&valT);
-					}
+					double valT = std::stod(strVal);
+					pvalOut->val = *reinterpret_cast<int64_t*>(&valT);
 					break;
 				}
 				default:

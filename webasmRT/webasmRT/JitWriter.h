@@ -11,13 +11,15 @@ class JitWriter
 	friend void CompileFn(ExecutionControlBlock *pectl, uint32_t ifn);
 public:
 	JitWriter(class WasmContext *pctxt, uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls);
+	~JitWriter();
 
 	void CompileFn(uint32_t ifn);
 
 	ExpressionService::Variant ExternCallFn(uint32_t ifn, void *pvAddrMem, ExpressionService::Variant *rgargs, uint32_t cargs);
 
 	// Psuedo private callbacks from ASM
-	uint64_t JitWriter::CReentryFn(int ifn, uint64_t *pvArgs, uint8_t *pvMemBase, ExecutionControlBlock *pecb);
+	uint64_t CReentryFn(int ifn, uint64_t *pvArgs, uint8_t *pvMemBase, ExecutionControlBlock *pecb);
+	uint32_t GrowMemory(ExecutionControlBlock *pectl, uint32_t cpages);
 private:
 	void SafePushCode(const void *pv, size_t cb);
 	template<typename T, size_t size>
@@ -61,6 +63,13 @@ private:
 		RotateLeft,
 		RotateRight,
 	};
+	enum class ArithmeticOperation
+	{
+		Add,
+		Sub,
+		Multiply,
+		Divide,
+	};
 
 	int32_t RelAddrPfnVector(uint32_t ifn, uint32_t opSize) const
 	{
@@ -103,8 +112,10 @@ private:
 	void DoubleCompare(CompareType type);
 	void Eqz32();
 	void Eqz64();
+	void CallAsmOp(void **pfn);
 	void LogicOp(LogicOperation op);
 	void LogicOp64(LogicOperation op);
+	void FloatArithmetic(ArithmeticOperation op, bool fDouble);
 	int32_t *JumpNIf(void *addr);	// returns a pointer to the offset encoded in the instruction for later adjustment
 	int32_t *Jump(void *addr);
 	void CallIfn(uint32_t ifn, uint32_t clocalsCaller, uint32_t cargsCallee, bool fReturnValue, bool fIndirect);
@@ -130,7 +141,11 @@ private:
 	uint8_t *m_pexecPlaneMax = nullptr;
 	void **m_pfnCallIndirectShim = nullptr;
 	void **m_pfnBranchTable = nullptr;
+	void **m_pfnU64ToF32 = nullptr;
 	void **m_pfnU64ToF64 = nullptr;
+	void **m_pfnGrowMemoryOp = nullptr;
+	void **m_pfnF32ToU64Trunc = nullptr;
+	void **m_pfnF64ToU64Trunc = nullptr;
 	uint64_t *m_pGlobalsStart = nullptr;
 	void *m_pheap = nullptr;
 	size_t m_cfn;

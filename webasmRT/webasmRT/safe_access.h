@@ -40,6 +40,9 @@ template<>
 varint32 safe_read_buffer(const uint8_t **prgb, size_t *pcb);
 
 template<>
+varint64 safe_read_buffer(const uint8_t **prgb, size_t *pcb);
+
+template<>
 std::string safe_read_buffer(const uint8_t **prgb, size_t *pcb);
 
 template<typename T> void safe_copy_buffer(T *rgdst, size_t celem, const uint8_t **prgb, size_t *pcb)

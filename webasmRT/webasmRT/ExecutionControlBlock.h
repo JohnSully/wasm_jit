@@ -6,6 +6,7 @@ struct ExecutionControlBlock
 	void *pfnEntry;
 	void *operandStack;
 	void *localsStack;
+	uint64_t cbHeap;
 	void *memoryBase;
 
 	uint64_t cFnIndirect;

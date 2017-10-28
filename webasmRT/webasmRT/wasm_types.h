@@ -36,33 +36,37 @@ struct varuintT
 using varuint32 = varuintT<uint32_t>;
 using varuint64 = varuintT<uint64_t>;
 
-struct varint32
+template <typename T>
+struct varintT
 {
-	varint32() = default;
-	varint32(int32_t val)
+	varintT() = default;
+	varintT(T val)
 		: val(val)
 	{}
 
-	operator int32_t() const
+	operator T() const
 	{
 		return val;
 	}
 
-	varint32 &operator|=(int32_t other)
+	varintT &operator|=(T other)
 	{
 		val |= other;
 		return *this;
 	}
 
 	template<typename T>
-	varint32 &operator-=(T other)
+	varintT &operator-=(T other)
 	{
 		val -= other;
 		return *this;
 	}
 
-	int32_t val;
+	T val;
 };
+
+using varint32 = varintT<int32_t>;
+using varint64 = varintT<int64_t>;
 
 typedef uint8_t block_type;
 
@@ -249,9 +253,35 @@ enum class opcode : uint8_t
 	i64_rotl = 0x89,
 	i64_rotr = 0x8a,
 
+	f32_abs = 0x8b,
 	f32_neg = 0x8c,
-
+	f32_ceil = 0x8d,
+	f32_floor = 0x8e,
+	f32_trunc = 0x8f,
+	f32_nearest = 0x90,
+	f32_sqrt = 0x91,
+	f32_add = 0x92,
+	f32_sub = 0x93,
+	f32_mul = 0x94,
+	f32_div = 0x95,
+	f32_min = 0x96,
+	f32_max = 0x97,
+	f32_copysign = 0x98,
+	
+	f64_abs = 0x99,
 	f64_neg = 0x9a,
+	f64_ceil = 0x9b,
+	f64_floor = 0x9c,
+	f64_trunc = 0x9d,
+	f64_nearest = 0x9e,
+	f64_sqrt = 0x9f,
+	f64_add = 0xa0,
+	f64_sub = 0xa1,
+	f64_mul = 0xa2,
+	f64_div = 0xa3,
+	f64_min = 0xa4,
+	f64_max = 0xa5,
+	f64_copysign = 0xa6,
 
 	i32_wrap_i64 = 0xa7,
 	i32_trunc_s_f32 = 0xa8,
@@ -274,6 +304,11 @@ enum class opcode : uint8_t
 	f64_convert_s_i64 = 0xb9,
 	f64_convert_u_i64 = 0xba,
 	f64_promote_f32 = 0xbb,
+
+	i32_reinterpret_f32 = 0xbc,
+	i64_reinterpret_f64 = 0xbd,
+	f32_reinterpret_i32 = 0xbe,
+	f64_reinterpret_i64 = 0xbf,
 
 	end = 0x0b,
 };
@@ -336,6 +371,25 @@ public:
 		FunctionTypeEntry *pfne = (FunctionTypeEntry*)malloc(sizeof(FunctionTypeEntry) + (sizeof(value_type) * cparams));	// this will allocate 1 extra value_type... who cares
 		pfne->cparams = cparams;
 		return unique_pfne_ptr(pfne);
+	}
+
+	bool operator==(const FunctionTypeEntry &other)
+	{
+		if (fHasReturnValue != other.fHasReturnValue)
+			return false;
+		if (fHasReturnValue)
+		{
+			if (return_type != other.return_type)
+				return false;
+		}
+		if (cparams != other.cparams)
+			return false;
+		for (uint32_t iparam = 0; iparam < cparams; ++iparam)
+		{
+			if (rgparam_type[iparam] != other.rgparam_type[iparam])
+				return false;
+		}
+		return true;
 	}
 
 	bool fHasReturnValue;

@@ -265,9 +265,6 @@ void WasmContext::load_data(const uint8_t *rgbPayload, size_t cbData)
 		uint32_t offset = static_cast<uint32_t>(varOffset.val);
 		uint32_t cb = safe_read_buffer<varuint32>(&rgbPayload, &cbData);
 
-		// Double verify to look for wrapping
-		Verify(offset <= m_vecmem.size());
-
 		if (offset + cb > m_vecmem.size())
 		{
 			m_vecmem.resize(offset + cb);
@@ -440,8 +437,31 @@ void WasmContext::LoadModule(FILE *pf)
 	m_spjitwriter = std::make_unique<JitWriter>(this, rgexec, cbExecPlane, m_vecfn_entries.size(), m_vecglbls.size());
 	LinkImports();
 
+	for (auto &itr : m_vecfn_entries)
+	{
+		itr = ITypeCanonicalFromIType(itr);
+	}
+
 	if (m_fStartFn)
 	{
 		m_spjitwriter->ExternCallFn(m_ifnStart, m_vecmem.data(), nullptr, 0);
 	}
+}
+
+uint32_t WasmContext::ITypeCanonicalFromIType(uint32_t idx)
+{
+	Verify(idx < m_vecfn_types.size());
+	if (idx == 0)
+		return idx;
+	
+	auto itrType = m_vecfn_types.begin() + idx;
+	do
+	{
+		itrType = itrType - 1;
+		if (**itrType == *m_vecfn_types[idx])
+		{
+			idx = numeric_cast<uint32_t>(itrType - m_vecfn_types.begin());
+		}
+	} while (itrType != m_vecfn_types.begin());
+	return idx;
 }

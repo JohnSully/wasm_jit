@@ -22,6 +22,26 @@ std::unique_ptr<WasmContext> g_spctxtLast;
 ExpressionService::Variant g_variantLastExec;
 ExpressionService::Variant g_variantExpectedReturn;
 
+const char *rgszUnsupported[] = {
+	"assert_trap",
+	"assert_invalid",
+	"assert_malformed",
+	"assert_unlinkable",
+	"assert_exhaustion",
+	"assert_return_canonical_nan",
+	"assert_return_arithmetic_nan",
+};
+
+bool FUnsupportedCommand(const std::string &str)
+{
+	for (const char *sz : rgszUnsupported)
+	{
+		if (str == sz)
+			return true;
+	}
+	return false;
+}
+
 int RunProgram(const char *szProgram, const char *szArgs)
 {
 	SHELLEXECUTEINFOA shellexeca = { 0 };
@@ -59,16 +79,20 @@ void ProcessInvoke(const char *rgch, size_t cch)
 {
 	size_t ichFnStart = 0;
 	assert(cch > 0);
-	while (rgch[ichFnStart] != '"')
+	bool fEscaped = false;
+	while (rgch[ichFnStart] != '"' || fEscaped)
 	{
+		fEscaped = rgch[ichFnStart] == '\\';
 		assert((ichFnStart + 1) < cch);
 		++ichFnStart;
 	}
+	fEscaped = false;
 	++ichFnStart;	// after the quote
-	size_t ichFnEnd = ichFnStart + 1;
+	size_t ichFnEnd = ichFnStart;
 	assert(ichFnEnd < cch);
-	while (rgch[ichFnEnd] != '"')
+	while (rgch[ichFnEnd] != '"' || fEscaped)
 	{
+		fEscaped = rgch[ichFnEnd] == '\\';
 		assert((ichFnEnd + 1) < cch);
 		++ichFnEnd;
 	}
@@ -149,7 +173,14 @@ void ProcessCommand(const std::string &str, FILE *pf, off_t offsetStart, off_t o
 		{
 			g_spctxtLast = std::make_unique<WasmContext>();
 			FILE *pfWasm = fopen(szPathWasm, "rb");
-			g_spctxtLast->LoadModule(pfWasm);
+			try
+			{
+				g_spctxtLast->LoadModule(pfWasm);
+			}
+			catch (Exception)
+			{
+				g_spctxtLast = nullptr;
+			}
 			fclose(pfWasm);
 		}
 		else
@@ -174,7 +205,7 @@ void ProcessCommand(const std::string &str, FILE *pf, off_t offsetStart, off_t o
 	{
 		//assert(false);
 	}
-	else if (str == "assert_invalid" || str == "assert_malformed" || str == "assert_exhaustion")
+	else if (FUnsupportedCommand(str))
 	{
 		//Unsupported tests
 	}
@@ -209,6 +240,7 @@ int main(int argc, char *argv[])
 	std::stack<ParseMode> stackMode;
 	stackMode.push(ParseMode::Whitespace);
 	bool fEscapeLast = false;
+	bool fCommentLast = false;
 	int cblock = 0;
 	std::stack<off_t> stackoffsetBlockStart;
 	bool fNestCmd = false;
@@ -222,6 +254,8 @@ int main(int argc, char *argv[])
 		while (pch < pchMax)
 		{
 			ParseMode mode = stackMode.top();
+			bool fCommentLastT = fCommentLast;
+			fCommentLast = false;
 
 			if (mode == ParseMode::Command)
 			{
@@ -231,7 +265,7 @@ int main(int argc, char *argv[])
 				}
 				else
 				{
-					fNestCmd = stackstrCmd.top() != "module" && stackstrCmd.top() != "assert_invalid" && stackstrCmd.top() != "assert_malformed" && stackstrCmd.top() != "assert_trap" && stackstrCmd.top() != "assert_exhaustion";
+					fNestCmd = stackstrCmd.top() != "module" && !FUnsupportedCommand(stackstrCmd.top());
 					stackMode.pop();
 					mode = stackMode.top();
 				}
@@ -244,7 +278,7 @@ int main(int argc, char *argv[])
 			}
 			else if (mode == ParseMode::Comment)
 			{
-				if (*pch == '\n')
+				if (*pch == '\n' || (*pch == ';' && !fCommentLastT))
 				{
 					stackMode.pop();
 					mode = stackMode.top();
@@ -260,6 +294,7 @@ int main(int argc, char *argv[])
 
 				case ';':
 					stackMode.push(ParseMode::Comment);
+					fCommentLast = true;
 					break;
 
 				case '(':

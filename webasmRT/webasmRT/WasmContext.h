@@ -30,6 +30,8 @@ protected:
 	void InitializeMemory();
 	void LinkImports();
 
+	uint32_t ITypeCanonicalFromIType(uint32_t idx);
+
 	struct GlobalVar
 	{
 		uint64_t val;

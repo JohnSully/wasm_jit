@@ -1,4 +1,8 @@
-
+_DATA SEGMENT
+f32_2p63:
+	dd 5f000000h
+f64_2p63:
+	dq 43E0000000000000h
 _TEXT SEGMENT
 
 ExecutionControlBlock STRUCT
@@ -7,6 +11,7 @@ ExecutionControlBlock STRUCT
 	pfnEntry dq ?
 	operandStack dq ?
 	localsStack dq ?
+	cbHeap dq ?
 	memoryBase dq ?
 
 	cFnIndirect dq ?
@@ -20,6 +25,26 @@ ExecutionControlBlock STRUCT
 	stackrestore dq ?
 	retvalue dq ?
 ExecutionControlBlock ENDS
+
+CallCFn	MACRO fn
+	; call the C function passed in, assuming the stack is unbalanced
+	
+	; balance the stack
+	push r13
+	mov r13, rsp
+	sub rsp, 8
+	and rsp, not 15
+	;Do the actual call
+	sub rsp, 32
+	call fn
+	; restore stack and go home
+	mov rsp, r13
+	pop r13
+ENDM
+
+CReentryFn PROTO
+GrowMemory PROTO
+
 
 ; REGISTERS:
 ;	rax - top of param stack
@@ -111,7 +136,6 @@ Trap PROC
 	jmp LTrapRet
 Trap ENDP
 
-CReentryFn PROTO
 WasmToC PROC
 	; Translates a wasm function call into a C function call for internal use
 	; we expect the internal function # in rcx already
@@ -149,13 +173,12 @@ CallIndirectShim PROC
 
 	mov edx, [rdx + rcx*4]	; get the callee's type
 	cmp edx, eax			; check if its equal to the expected type
-	jne LDoTrap				; Trap if not
+	jne LDoTrap				; Trap if not				
 
 	; Type is validated now lets do the function call
 	cmp rcx, (ExecutionControlBlock PTR [rbp]).cFnPtrs
 	jae LDoTrap
 	mov rdx, (ExecutionControlBlock PTR [rbp]).rgFnPtrs
-	;jmp qword ptr [rdx + rcx*8]
 	mov rax, [rdx + rcx*8]
 	test rax, rax
 	jz LCompileFn
@@ -168,44 +191,87 @@ LDoTrap:
 LCompileFn:
 	lea rax, [rdx + rcx*8]
 	push rax
-	xor r13d, r13d
-	test rsp, 8
-	jz LNoBalance
-	sub rsp, 8
-	add r13d, 1
-LNoBalance:
-	sub rsp, 32
 	mov edx, ecx	; second param is the function index
 	mov rcx, rbp	; first param the control block
-	call CompileFn  ; call the function
-	add rsp, 32
-	test r13d, r13d
-	jz LNoUnBalance
-	add rsp, 8
-LNoUnBalance:
+	CallCFn CompileFn
 	pop rax
 	jmp qword ptr [rax]
 	ud2
 CallIndirectShim ENDP
 
-
-double_1:
-	dq 3FF0000000000000h
-double_2:
-	dq 4000000000000000h
+U64ToF32 PROC
+	test rax, rax
+	js LSpecialCase
+	cvtsi2ss xmm0, rax
+	movd rax, xmm0
+	ret
+LSpecialCase:
+	mov rdx, rax
+	and edx, 1			; edx store the least significant bit of our input
+	shr rax, 1			; divide the input by 2
+	or rax, rdx			; round to odd
+	cvtsi2ss xmm0, rax	; convert input/2 -> double
+	addss xmm0, xmm0	; multiply by 2
+	movq rax, xmm0		; save the result in rax
+	ret
+U64ToF32 ENDP
 
 U64ToF64 PROC
-	xor edx, edx
-	shr rax, 1
+	test rax, rax
+	js LSpecialCase
 	cvtsi2sd xmm0, rax
-	mulsd xmm0, qword ptr [double_2]
-	jnc LNoCarry
-	addsd xmm0, qword ptr [double_1]
-LNoCarry:
-	movq qword ptr [rdi], xmm0
-	mov rax, qword ptr [rdi]
+	movq rax, xmm0
+	ret
+LSpecialCase:
+	mov rdx, rax
+	and edx, 1			; edx store the least significant bit of our input
+	shr rax, 1			; divide the input by 2
+	or rax, rdx			; round to odd
+	cvtsi2sd xmm0, rax	; convert input/2 -> double
+	addsd xmm0, xmm0	; multiply by 2
+	movq rax, xmm0		; save the result in rax
 	ret
 U64ToF64 ENDP
+
+F32ToU64Trunc PROC
+	movd xmm0, eax
+	ucomiss xmm0, dword ptr [f32_2p63]	; compare with 2^63
+	jae LSpecialCase
+	cvttss2si rax, xmm0
+	ret
+LSpecialCase:
+	subss xmm0, dword ptr [f32_2p63]	; take out the 2^63 (should reduce output by one bit)
+	xor rcx, rcx
+	add rcx, 1				; set lsb of rcx
+	ror rcx, 1				; set msb of rcx (clear lsb)  at this point rcx == 2^63
+	cvttss2si rax, xmm0		; convert to integer
+	add rax, rcx			; add in the 2^63 we took out
+	ret
+F32ToU64Trunc ENDP
+
+F64ToU64Trunc PROC
+	movq xmm0, rax
+	ucomisd xmm0, qword ptr [f64_2p63]
+	jae LSpecialCase
+	cvttsd2si rax, xmm0
+	ret
+LSpecialCase:
+	subsd xmm0, qword ptr [f64_2p63]	; take out the 2^63 (should reduce output by one bit)
+	xor rcx, rcx
+	add rcx, 1				; set lsb of rcx
+	ror rcx, 1				; set msb of rcx (clear lsb) rcx == 2^63
+	cvttsd2si rax, xmm0		; convert to integer
+	add rax, rcx			; add back the 2^63 we removed
+	ret
+F64ToU64Trunc ENDP
+
+GrowMemoryOp PROC
+	mov rcx, rbp
+	mov rdx, rax
+	; Grow Memory eats an operand and returns an operand
+	CallCFn GrowMemory
+	ret
+GrowMemoryOp ENDP
 
 _TEXT ENDS
 

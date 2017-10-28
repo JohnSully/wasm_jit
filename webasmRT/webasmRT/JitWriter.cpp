@@ -11,7 +11,11 @@
 extern "C" void WasmToC();
 extern "C" void CallIndirectShim();
 extern "C" void BranchTable();
+extern "C" void U64ToF32();
 extern "C" void U64ToF64();
+extern "C" void GrowMemoryOp();
+extern "C" void F32ToU64Trunc();
+extern "C" void F64ToU64Trunc();
 
 JitWriter::JitWriter(WasmContext *pctxt, uint8_t *pexecPlane, size_t cbExec, size_t cfn, size_t cglbls)
 	: m_pctxt(pctxt), m_pexecPlane(pexecPlane), m_pexecPlaneCur(pexecPlane), m_pexecPlaneMax(pexecPlane + cbExec), m_cfn(cfn)
@@ -21,8 +25,12 @@ JitWriter::JitWriter(WasmContext *pctxt, uint8_t *pexecPlane, size_t cbExec, siz
 	
 	m_pfnCallIndirectShim = (void**)m_pexecPlaneCur;
 	m_pfnBranchTable = ((void**)m_pexecPlaneCur) + 1;
-	m_pfnU64ToF64 = ((void**)m_pexecPlaneCur) + 2;
-	m_pexecPlaneCur += sizeof(*m_pfnCallIndirectShim) * 3;
+	m_pfnU64ToF32 = ((void**)m_pexecPlaneCur) + 2;
+	m_pfnU64ToF64 = ((void**)m_pexecPlaneCur) + 3;
+	m_pfnGrowMemoryOp = ((void**)m_pexecPlaneCur) + 4;
+	m_pfnF32ToU64Trunc = ((void**)m_pexecPlaneCur) + 5;
+	m_pfnF64ToU64Trunc = ((void**)m_pexecPlaneCur) + 6;
+	m_pexecPlaneCur += sizeof(*m_pfnCallIndirectShim) * 7;
 
 	m_pexecPlaneCur += (4096 - reinterpret_cast<uint64_t>(m_pexecPlaneCur)) % 4096;
 	m_pGlobalsStart = (uint64_t*)m_pexecPlaneCur;
@@ -35,7 +43,22 @@ JitWriter::JitWriter(WasmContext *pctxt, uint8_t *pexecPlane, size_t cbExec, siz
 		reinterpret_cast<void**>(m_pexecPlane)[iimportfn] = WasmToC;
 	*m_pfnCallIndirectShim = CallIndirectShim;
 	*m_pfnBranchTable = BranchTable;
+	*m_pfnU64ToF32 = U64ToF32;
 	*m_pfnU64ToF64 = U64ToF64;
+	*m_pfnGrowMemoryOp = GrowMemoryOp;
+	*m_pfnF32ToU64Trunc = F32ToU64Trunc;
+	*m_pfnF64ToU64Trunc = F64ToU64Trunc;
+
+	for (size_t iglbl = 0; iglbl < cglbls; ++iglbl)
+	{
+		m_pGlobalsStart[iglbl] = pctxt->m_vecglbls[iglbl].val;
+	}
+}
+
+JitWriter::~JitWriter()
+{
+	if (m_pheap != nullptr)
+		VirtualFree(m_pheap, 0, MEM_RELEASE);
 }
 
 void JitWriter::SafePushCode(const void *pv, size_t cb)
@@ -347,14 +370,18 @@ int32_t *JitWriter::EnterIF()
 	// mov rax, [rdi]
 	static const uint8_t rgcodeTest[] = { 0x48, 0x83, 0xEF, 0x08, 0x48, 0x85, 0xC0, 0x48, 0x8B, 0x07 };
 	SafePushCode(rgcodeTest);
-	// push rdi
-	static const uint8_t rgcode[] = { 0x57 };
-	SafePushCode(rgcode);
 	// jz rel32
 	static const uint8_t rgcodeJz[] = {0x0F, 0x84};
 	SafePushCode(rgcodeJz);
 	int32_t *prel32Ret = (int32_t*)m_pexecPlaneCur;
 	SafePushCode(int32_t(0));	// placeholder
+
+	_PushExpandStack();	// backup rax
+
+	// push rdi
+	static const uint8_t rgcode[] = { 0x57 };
+	SafePushCode(rgcode);
+
 	return prel32Ret;
 }
 
@@ -454,11 +481,130 @@ void JitWriter::Compare(CompareType type, bool fSigned, bool f64)
 	SafePushCode(rgcodePost, _countof(rgcodePost));
 }
 
+void JitWriter::CallAsmOp(void **pfn)
+{
+	static const uint8_t rgcodeCallIndirect[] = { uint8_t(0xFF), uint8_t(0x15) };
+	SafePushCode(rgcodeCallIndirect);
+	ptrdiff_t diffFn = reinterpret_cast<ptrdiff_t>(pfn) - (reinterpret_cast<ptrdiff_t>(m_pexecPlaneCur) + 4);
+	Verify(static_cast<int32_t>(diffFn) == diffFn);
+	SafePushCode(int32_t(diffFn));
+}
+
 void JitWriter::Convert(value_type typeDst, value_type typeSrc, bool fSigned)
 {
 	const char *szConv = nullptr;
 	switch (typeDst)
 	{
+	case value_type::i32:
+		switch (typeSrc)
+		{
+		case value_type::f32:
+			if (fSigned)
+			{
+				// movd xmm0, eax
+				// CVTTSS2SI eax, xmm0
+				szConv = "\x66\x0F\x6E\xC0\xF3\x0F\x2C\xC0";
+			}
+			else
+			{
+				// movd xmm0, eax
+				// CVTTSS2SI rax, xmm0
+				// mov eax, eax
+				szConv = "\x66\x0F\x6E\xC0\xF3\x48\x0F\x2C\xC0\x89\xC0";
+			}
+			break;
+
+		case value_type::f64:
+			if (fSigned)
+			{
+				// movq xmm0, rax
+				// CVTTSD2SI eax, xmm0
+				szConv = "\x66\x48\x0F\x6E\xC0\xF2\x0F\x2C\xC0";
+			}
+			else
+			{
+				// movq xmm0, rax
+				// CVTTSD2SI rax, xmm0
+				// mov eax, eax
+				szConv = "\x66\x48\x0F\x6E\xC0\xF2\x48\x0F\x2C\xC0\x89\xC0";
+			}
+			break;
+		}
+		break;
+
+	case value_type::i64:
+		switch (typeSrc)
+		{
+		case value_type::f32:
+			if (fSigned)
+			{
+				// movd xmm0, eax
+				// CVTTSS2SI rax, xmm0
+				szConv = "\x66\x0F\x6E\xC0\xF3\x48\x0F\x2C\xC0";
+			}
+			else
+			{
+				CallAsmOp(m_pfnF32ToU64Trunc);
+				return;
+			}
+			break;
+		
+		case value_type::f64:
+			if (fSigned)
+			{
+				// movq xmm0, rax
+				// cvttsd2si rax, xmm0
+				szConv = "\x66\x48\x0F\x6E\xC0\xF2\x48\x0F\x2C\xC0";
+			}
+			else
+			{
+				CallAsmOp(m_pfnF64ToU64Trunc);
+				return;
+			}
+		}
+		break;
+
+	case value_type::f32:
+		switch (typeSrc)
+		{
+		case value_type::i32:
+			if (fSigned)
+			{
+				// cvtsi2ss xmm0, eax
+				// movd eax, xmm0
+				szConv = "\xF3\x0F\x2A\xC0\x66\x0F\x7E\xC0";
+			}
+			else
+			{
+				// cvtsi2ss xmm0, rax
+				// movd eax, xmm0
+				szConv = "\xF3\x48\x0F\x2A\xC0\x66\x0F\x7E\xC0";
+			}
+			break;
+
+		case value_type::i64:
+			if (fSigned)
+			{
+				// cvtsi2ss xmm0, rax
+				// movd eax, xmm0
+				szConv = "\xF3\x48\x0F\x2A\xC0\x66\x0F\x7E\xC0";
+			}
+			else
+			{
+				CallAsmOp(m_pfnU64ToF32);
+				return;
+			}
+			break;
+
+		case value_type::f64:
+			// movq xmm0, rax
+			// cvtsd2ss xmm0, xmm0
+			// movd eax, xmm0
+			szConv = "\x66\x48\x0F\x6E\xC0\xF2\x0F\x5A\xC0\x66\x0F\x7E\xC0";
+			break;
+		}
+		break;
+
 	case value_type::f64:
 		switch (typeSrc)
 		{
@@ -480,11 +626,7 @@ void JitWriter::Convert(value_type typeDst, value_type typeSrc, bool fSigned)
 			if (!fSigned)
 			{
 				// call [m_pfnU64ToF64]
-				static const uint8_t rgcodeCallIndirect[] = { uint8_t(0xFF), uint8_t(0x15) };
-				SafePushCode(rgcodeCallIndirect);
-				ptrdiff_t diffFn = reinterpret_cast<ptrdiff_t>(m_pfnU64ToF64) - reinterpret_cast<ptrdiff_t>(m_pfnU64ToF64 + 4);
-				Verify(static_cast<int32_t>(diffFn) == diffFn);
-				SafePushCode(int32_t(diffFn));
+				CallAsmOp(m_pfnU64ToF64);
 				return;
 			}
 			else
@@ -517,6 +659,10 @@ void JitWriter::FloatCompare(CompareType type)
 	case CompareType::GreaterThanEqual:
 		fSwap = true;
 	}
+
+	// sub rdi, 8 (for the variable we're about to pop)
+	static const uint8_t rgcodeFixRdi[] = { 0x48, 0x83, 0xEF, 0x08 };
+	SafePushCode(rgcodeFixRdi);
 
 	if (fSwap)
 	{
@@ -557,9 +703,8 @@ void JitWriter::FloatCompare(CompareType type)
 		cmpssImm = 4;
 		break;
 	}
-	// sub rdi, 4			; fixup stack for the op we just loaded
 	// cmpss xmm0, xmm1, imm8
-	static const uint8_t rgcodeCmpss[] = { 0x48, 0x83, 0xEF, 0x04, 0xF3, 0x0F, 0xC2, 0xC1 };
+	static const uint8_t rgcodeCmpss[] = { 0xF3, 0x0F, 0xC2, 0xC1 };
 	SafePushCode(rgcodeCmpss);
 	SafePushCode(uint8_t(cmpssImm));
 
@@ -775,14 +920,16 @@ void JitWriter::FnPrologue(uint32_t clocals, uint32_t cargs)
 	if (clocalsNoArgs > 0)
 	{
 		// xor eax, eax						; rax is clobbered so no need to save it
-		// lea rdx, [rbx + localOffset]
+		// mov rdx, rdi						; backup rdi
+		// lea rdi, [rbx + localOffset]
 		// mov rcx, (clocals - cargs)
-		// rep stos qword ptr [rdx]
+		// rep stos qword ptr [rdi]
+		// mov rdi, rdx
 
-		static const uint8_t rgcodeXorEax[] = { 0x31, 0xC0 };	// xor eax, eax
-		SafePushCode(rgcodeXorEax, _countof(rgcodeXorEax));
+		static const uint8_t rgcodeXorEax[] = { 0x31, 0xC0, 0x48, 0x89, 0xFA };	// xor eax, eax  mov rdx, rdi
+		SafePushCode(rgcodeXorEax);
 
-		static const uint8_t rgcodeLeaRdx[] = { 0x48, 0x8D, 0x93 };	// lea rdx, [rbx + XYZ]
+		static const uint8_t rgcodeLeaRdx[] = { 0x48, 0x8D, 0xBB };	// lea rdi, [rbx + XYZ]
 		int32_t cbOffset = (cargs * sizeof(uint64_t));
 		SafePushCode(rgcodeLeaRdx, _countof(rgcodeLeaRdx));
 		SafePushCode(&cbOffset, sizeof(cbOffset));
@@ -794,7 +941,11 @@ void JitWriter::FnPrologue(uint32_t clocals, uint32_t cargs)
 
 		static const uint8_t rgcodeRepStos[] = { 0xF3, 0x48, 0xAB };	// rep stos qword ptr [rdx]
 		SafePushCode(rgcodeRepStos, _countof(rgcodeRepStos));
+
+		static const uint8_t rgcodeRestoreRdi[] = { 0x48, 0x89, 0xD7 };
+		SafePushCode(rgcodeRestoreRdi);
 	}
+	_PushExpandStack();
 	// push rdi
 	SafePushCode(uint8_t(0x57));
 }
@@ -1022,6 +1173,72 @@ void JitWriter::BranchTableParse(const uint8_t **ppoperand, size_t *pcbOperand, 
 	}
 }
 
+void JitWriter::FloatArithmetic(ArithmeticOperation op, bool fDouble)
+{
+	// sub rdi, 8
+	static const uint8_t rgcodeSubRdi[] = { 0x48, 0x83, 0xEF, 0x08 };
+	SafePushCode(rgcodeSubRdi);
+	if (fDouble)
+	{
+		// movq xmm1, rax
+		// movq xmm0, qword ptr [rdi]
+		static const uint8_t rgcodeSetup[] = { 0x66, 0x48, 0x0F, 0x6E, 0xC8, 0xF3, 0x0F, 0x7E, 0x07 };
+		SafePushCode(rgcodeSetup);
+	}
+	else
+	{
+		// movd xmm1, eax
+		// movd xmm0, dword ptr [rdi]
+		static const uint8_t rgcodeSetup[] = { 0x66, 0x0F, 0x6E, 0xC8, 0x66, 0x0F, 0x6E, 0x07 };
+		SafePushCode(rgcodeSetup);
+	}
+
+	const char *szCode = nullptr;
+	switch (op)
+	{
+	case ArithmeticOperation::Add:
+		if (fDouble)
+			szCode = "\xF2\x0F\x58\xC1";	// addsd xmm0, xmm1
+		else
+			szCode = "\xF3\x0F\x58\xC1";	// addss xmm0, xmm1
+		break;
+	case ArithmeticOperation::Sub:
+		if (fDouble)
+			szCode = "\xF2\x0F\x5C\xC1";	// subsd xmm0, xmm1
+		else
+			szCode = "\xF3\x0F\x5C\xC1";	// subss xmm0, xmm1
+		break;
+	case ArithmeticOperation::Multiply:
+		if (fDouble)
+			szCode = "\xF2\x0F\x59\xC1";	// mulsd xmm0, xmm1
+		else
+			szCode = "\xF3\x0F\x59\xC1";	// mulss xmm0, xmm1
+		break;
+	case ArithmeticOperation::Divide:
+		if (fDouble)
+			szCode = "\xF2\x0F\x5E\xC1";	// divsd xmm0, xmm1
+		else
+			szCode = "\xF3\x0F\x5E\xC1";	// divss xmm0, xmm1
+		break;
+	}
+	Verify(szCode != nullptr);
+	SafePushCode(szCode, strlen(szCode));
+
+	if (fDouble)
+	{
+		// movq rax, xmm0
+		static const uint8_t rgcode[] = { 0x66, 0x48, 0x0F, 0x7E, 0xC0 };
+		SafePushCode(rgcode);
+	}
+	else
+	{
+		// movd eax, xmm0
+		static const uint8_t rgcode[] = { 0x66, 0x0F, 0x7E, 0xC0 };
+		SafePushCode(rgcode);
+	}
+}
+
+
 void JitWriter::GetGlobal(uint32_t idx)
 {
 	auto &glbl = m_pctxt->m_vecglbls.at(idx);
@@ -1032,9 +1249,16 @@ void JitWriter::GetGlobal(uint32_t idx)
 		const char *szCode = nullptr;
 		switch (glbl.type)
 		{
+		case value_type::f32:
 		case value_type::i32:
 			// mov eax, [m_pGlobalsStart + idx*8] (rip relative)
 			szCode = "\x8B\x05";
+			break;
+
+		case value_type::f64:
+		case value_type::i64:
+			// mov rax, [m_pGlobalsStart + idx*8] (rip relative)
+			szCode = "\x48\x8B\x05";
 			break;
 
 		default:
@@ -1051,8 +1275,13 @@ void JitWriter::GetGlobal(uint32_t idx)
 	{
 		switch (glbl.type)
 		{
+		case value_type::f32:
 		case value_type::i32:
 			PushC32((uint32_t)glbl.val);
+			break;
+		case value_type::f64:
+		case value_type::i64:
+			PushC64(glbl.val);
 			break;
 		default:
 			Verify(false);
@@ -1068,8 +1297,14 @@ void JitWriter::SetGlobal(uint32_t idx)
 	const char *szCode = nullptr;
 	switch (glbl.type)
 	{
+	case value_type::f32:
 	case value_type::i32:
 		szCode = "\x89\x05";
+		break;
+
+	case value_type::f64:
+	case value_type::i64:
+		szCode = "\x48\x89\x05";
 		break;
 
 	default:
@@ -1321,6 +1556,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 			int32_t *poffsetFix = stackVecFixupsRelative.back().front();
 			stackVecFixupsRelative.back().erase(stackVecFixupsRelative.back().begin());	// remove it
 			*poffsetFix = numeric_cast<int32_t>(m_pexecPlaneCur - (reinterpret_cast<uint8_t*>(poffsetFix) + sizeof(*poffsetFix)));
+			_PushExpandStack();
+			// push rdi
+			static const uint8_t rgcode[] = { 0x57 };
+			SafePushCode(rgcode);
 			break;
 		}
 
@@ -1403,7 +1642,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
 			safe_read_buffer<char>(&pop, &cb);	// reserved
 			auto ptype = m_pctxt->m_vecfn_types.at(idx).get();
-			CallIfn(idx, clocals, ptype->cparams, ptype->fHasReturnValue, true /*fIndirect*/);
+			CallIfn(m_pctxt->ITypeCanonicalFromIType(idx), clocals, ptype->cparams, ptype->fHasReturnValue, true /*fIndirect*/);
 			break;
 		}
 
@@ -1429,7 +1668,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 		}
 		case opcode::i64_const:
 		{
-			uint64_t val = safe_read_buffer<varuint64>(&pop, &cb);
+			uint64_t val = safe_read_buffer<varint64>(&pop, &cb);
 			printf("i64.const %llu\n", val);
 			PushC64(val);
 			break;
@@ -1604,7 +1843,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("f64.load $%X\n", offset);
-			Ud2();
+			LoadMem(offset, true, 8, false);
 			break;
 		}
 
@@ -1623,6 +1862,14 @@ void JitWriter::CompileFn(uint32_t ifn)
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i32_load8_s $%X\n", offset);
 			LoadMem(offset, false, 1, true);
+			break;
+		}
+		case opcode::i32_load16_s:
+		{
+			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
+			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+			printf("i32_load16_s $%X\n", offset);
+			LoadMem(offset, false, 2, true);
 			break;
 		}
 
@@ -1668,7 +1915,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
 			printf("i64_load32_s $%X\n", offset);
-			LoadMem(offset, true, 8, false);
+			LoadMem(offset, true, 4, true);
 			break;
 		}
 
@@ -1713,6 +1960,7 @@ void JitWriter::CompileFn(uint32_t ifn)
 
 		case opcode::i64_store32:
 		case opcode::i32_store:
+		case opcode::f32_store:
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
@@ -1899,16 +2147,99 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("f32.neg\n");
 			FloatNeg(false /*fDouble*/);
 			break;
+		case opcode::f32_add:
+			printf("f32.add\n");
+			FloatArithmetic(ArithmeticOperation::Add, false /*fDouble*/);
+			break;
+		case opcode::f32_sub:
+			printf("f32.sub\n");
+			FloatArithmetic(ArithmeticOperation::Sub, false /*fDouble*/);
+			break;
+		case opcode::f32_mul:
+			printf("f32.mul\n");
+			FloatArithmetic(ArithmeticOperation::Multiply, false /*fDouble*/);
+			break;
+		case opcode::f32_div:
+			printf("f32.div\n");
+			FloatArithmetic(ArithmeticOperation::Divide, false /*fDouble*/);
+			break;
+		case opcode::f32_copysign:
+			Ud2();	// doesn't work
+			printf("f32.copysign\n");
+			// and eax, 8000'0000h
+			// xor [rdi - 8], eax
+			SafePushCode("\x25\x00\x00\x00\x80\x31\x47\xF8", 8);
+			_PopContractStack();
+			break;
 
 		case opcode::f64_neg:
 			printf("f64.neg\n");
 			FloatNeg(true /*fDouble*/);
 			break;
+		case opcode::f64_add:
+			printf("f64.add\n");
+			FloatArithmetic(ArithmeticOperation::Add, true /*fDouble*/);
+			break;
+		case opcode::f64_sub:
+			printf("f64.sub\n");
+			FloatArithmetic(ArithmeticOperation::Sub, true /*fDouble*/);
+			break;
+		case opcode::f64_mul:
+			printf("f64.mul\n");
+			FloatArithmetic(ArithmeticOperation::Multiply, true /*fDouble*/);
+			break;
+		case opcode::f64_div:
+			printf("f64.div\n");
+			FloatArithmetic(ArithmeticOperation::Divide, true /*fDouble*/);
+			break;
+		case opcode::f64_copysign:
+			printf("f64.copysign\n");
+			Ud2();	// doesn't work
+			// mov rcx, 0x8000000000000000
+			// and rax, rcx
+			// xor[rdi - 8], rax
+			SafePushCode("\x48\xB9\x00\x00\x00\x00\x00\x00\x00\x80\x48\x21\xC8\x48\x31\x47\xF8", 17);
+			_PopContractStack();
+			break;
 
 		case opcode::i32_wrap_i64:
-			printf("i32.wrap/i64\n");
-			break;	// NOP because accessing eax, even when set as rax has the same behavior
-
+		{
+			const uint8_t rgcode[] = { 0x89, 0xC0 };	// mov eax, eax	; truncates upper 64-bits
+			SafePushCode(rgcode);
+			break;
+		}
+		case opcode::i32_trunc_s_f32:
+			printf("i32.trunc_s/f32\n");
+			Convert(value_type::i32, value_type::f32, true /*fSigned*/);
+			break;
+		case opcode::i32_trunc_u_f32:
+			printf("i32.trunc_u/f32\n");
+			Convert(value_type::i32, value_type::f32, false /*fSigned*/);
+			break;
+		case opcode::i32_trunc_s_f64:
+			printf("i32.trunc_s/f64\n");
+			Convert(value_type::i32, value_type::f64, true /*fSigned*/);
+			break;
+		case opcode::i32_trunc_u_f64:
+			printf("i32.trunc_u/f64\n");
+			Convert(value_type::i32, value_type::f64, false /*fSigned*/);
+			break;
+		case opcode::i64_trunc_s_f32:
+			printf("i64.trunc_s/f32\n");
+			Convert(value_type::i64, value_type::f32, true /*fSigned*/);
+			break;
+		case opcode::i64_trunc_u_f32:
+			printf("i64.trunc_u/f32");
+			Convert(value_type::i64, value_type::f32, false /*fSigned*/);
+			break;
+		case opcode::i64_trunc_s_f64:
+			printf("i64.trunc_s/f64\n");
+			Convert(value_type::i64, value_type::f64, true /*fSigned*/);
+			break;
+		case opcode::i64_trunc_u_f64:
+			printf("i64.trunc_u/f64\n");
+			Convert(value_type::i64, value_type::f64, false /*fSigned*/);
+			break;
 		case opcode::i64_extend_s_i32:
 			printf("i64.extend_s_i32\n");
 			ExtendSigned32_64();
@@ -1916,6 +2247,22 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::i64_extend_u_i32:
 			printf("i64.extend_u/i32\n");
 			break;	// NOP because the upper register should be zero regardless
+		case opcode::f32_convert_s_i32:
+			printf("f32.convert_s/i32\n");
+			Convert(value_type::f32, value_type::i32, true /*fSigned*/);
+			break;
+		case opcode::f32_convert_u_i32:
+			printf("f32.convert_u/i32\n");
+			Convert(value_type::f32, value_type::i32, false /*fSigned*/);
+			break;
+		case opcode::f32_convert_s_i64:
+			printf("f32.convert_s/i64\n");
+			Convert(value_type::f32, value_type::i64, true /*fSigned*/);
+			break;
+		case opcode::f32_convert_u_i64:
+			printf("f32.convert_u/i64\n");
+			Convert(value_type::f32, value_type::i64, false /*fSigned*/);
+			break;
 		case opcode::f64_convert_s_i32:
 			printf("f64.convert_s/i32\n");
 			Convert(value_type::f64, value_type::i32, true /*fSigned*/);
@@ -1923,6 +2270,10 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::f64_convert_u_i32:
 			printf("f64.convert_u/i32\n");
 			Convert(value_type::f64, value_type::i32, false /*fSigned*/);
+			break;
+		case opcode::f64_convert_s_i64:
+			printf("f64.convert_s/i64\n");
+			Convert(value_type::f64, value_type::i64, true /*fSigned*/);
 			break;
 		case opcode::f64_convert_u_i64:
 			printf("i64.convert_u/i64\n");
@@ -1932,6 +2283,16 @@ void JitWriter::CompileFn(uint32_t ifn)
 			printf("f64.promote/f32\n");
 			Convert(value_type::f64, value_type::f32, true);
 			break;
+		case opcode::f32_demote_f64:
+			printf("f32.demote/f64\n");
+			Convert(value_type::f32, value_type::f64, true);
+			break;
+
+		case opcode::i32_reinterpret_f32:
+		case opcode::i64_reinterpret_f64:
+		case opcode::f32_reinterpret_i32:
+		case opcode::f64_reinterpret_i64:
+			break; //nop
 
 		case opcode::end:
 			printf("end\n");
@@ -1959,8 +2320,21 @@ void JitWriter::CompileFn(uint32_t ifn)
 			stackVecFixupsAbsolute.pop_back();
 			break;
 
+		case opcode::current_memory:
+		{
+			uint8_t reserved = safe_read_buffer<uint8_t>(&pop, &cb);
+			printf("current_memory\n");
+			PushC32(0);						// re-use grow_memory, just give a delta of 0
+			CallAsmOp(m_pfnGrowMemoryOp);
+			break;
+		}
 		case opcode::grow_memory:
-			break;	// NOP for now
+		{
+			uint8_t reserved = safe_read_buffer<uint8_t>(&pop, &cb);
+			printf("grow_memory\n");
+			CallAsmOp(m_pfnGrowMemoryOp);
+			break;
+		}
 			
 		default:
 			throw RuntimeException("Invalid opcode");
@@ -2008,8 +2382,8 @@ ExpressionService::Variant JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr, E
 		CompileFn(ifn);
 	}
 	
-	m_vecoperand.resize(4096*100);
-	m_veclocals.resize(4096*100);
+	m_vecoperand.resize(4096 * 100);
+	m_veclocals.resize(4096 * 100);
 	Verify(pfn != nullptr);
 	if (m_pheap == nullptr)
 	{
@@ -2031,6 +2405,14 @@ ExpressionService::Variant JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr, E
 	ectl.pfnEntry = pfn;
 	ectl.operandStack = m_vecoperand.data();
 	ectl.localsStack = m_veclocals.data();
+	if (m_pctxt->m_vecmem_types.size() > 0)
+	{
+		ectl.cbHeap = m_pctxt->m_vecmem_types[0].initial_size * (64 * 1024);
+	}
+	else
+	{
+		ectl.cbHeap = 0;
+	}
 	ectl.memoryBase = m_pheap;
 	ectl.cFnIndirect = m_pctxt->m_vecIndirectFnTable.size();
 	ectl.rgfnIndirect = m_pctxt->m_vecIndirectFnTable.data();
@@ -2041,10 +2423,12 @@ ExpressionService::Variant JitWriter::ExternCallFn(uint32_t ifn, void *pvAddr, E
 	
 	ProtectForRuntime();
 	retV = ExternCallFnASM(&ectl);
+	UnprotectRuntime();
 	Verify(retV);
 	Verify(ectl.operandStack >= m_vecoperand.data());
 	Verify(ectl.localsStack >= m_veclocals.data());
-	UnprotectRuntime();
+	if (ectl.cbHeap > 0)
+		m_pctxt->m_vecmem_types[0].initial_size = numeric_cast<uint32_t>(ectl.cbHeap / (64 * 1024));
 
 	ExpressionService::Variant varRet;
 	
@@ -2059,4 +2443,24 @@ extern "C" void CompileFn(ExecutionControlBlock *pectl, uint32_t ifn)
 	pectl->pjitWriter->UnprotectRuntime();
 	pectl->pjitWriter->CompileFn(ifn);
 	pectl->pjitWriter->ProtectForRuntime();
+}
+
+uint32_t JitWriter::GrowMemory(ExecutionControlBlock *pectl, uint32_t cpages)
+{
+	size_t cb = size_t(cpages) * 64 * 1024;	// convert to bytes
+	size_t cbMax = 0x1'0000'0000;
+	if (m_pctxt->m_vecmem_types.size() > 0 && m_pctxt->m_vecmem_types[0].fMaxSet)
+	{
+		cbMax = m_pctxt->m_vecmem_types[0].maximum_size * (64 * 1024ULL);
+	}
+	if ((pectl->cbHeap + cb) > cbMax)
+		return -1;
+	Verify(pectl->cbHeap + cb < 0x1'0000'0000);
+	uint32_t cbRet = (uint32_t)(pectl->cbHeap / (64 * 1024));
+	pectl->cbHeap += cb;
+	return cbRet;
+}
+extern "C" uint32_t GrowMemory(ExecutionControlBlock *pectl, uint32_t cpages)
+{
+	return pectl->pjitWriter->GrowMemory(pectl, cpages);
 }
