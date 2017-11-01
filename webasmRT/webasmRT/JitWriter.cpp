@@ -1480,10 +1480,12 @@ void JitWriter::CompileFn(uint32_t ifn)
 		}
 	}
 
+#ifdef PRINT_DISASSEMBLY
 	if (szFnName != nullptr)
 		printf("Function %s (%d):\n", szFnName, ifn);
 	else
 		printf("Function %d:\n", ifn);
+#endif
 
 	stackBlockTypeAddr.push_back(std::make_pair(value_type::none, nullptr));	// nullptr means we need to fixup addrs
 	stackVecFixupsRelative.push_back(std::vector<int32_t*>());
@@ -1493,28 +1495,36 @@ void JitWriter::CompileFn(uint32_t ifn)
 		cb--;	// count *pop
 		++pop;
 		_SetDbgReg(*(pop - 1));
+#ifdef PRINT_DISASSEMBLY
 		printf("%p (%X):\t", m_pexecPlaneCur, *(pop - 1));
 		for (size_t itab = 0; itab < stackBlockTypeAddr.size(); ++itab)
 			printf("\t");
+#endif
 		switch ((opcode)*(pop - 1))
 		{
 		case opcode::unreachable:
 		{
 			// ud2
+#ifdef PRINT_DISASSEMBLY
 			printf("unreachable\n");
+#endif
 			static const uint8_t rgcode[] = { 0x0F, 0x0B };
 			SafePushCode(rgcode, _countof(rgcode));
 			break;
 		}
 
 		case opcode::nop:
+#ifdef PRINT_DISASSEMBLY
 			printf("nop\n");
+#endif
 			break;
 
 		case opcode::block:
 		{
 			value_type type = safe_read_buffer<value_type>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("block\n");
+#endif
 			stackBlockTypeAddr.push_back(std::make_pair(type, nullptr));	// nullptr means we need to fixup addrs
 			stackVecFixupsRelative.push_back(std::vector<int32_t*>());
 			stackVecFixupsAbsolute.push_back(std::vector<void**>());
@@ -1525,7 +1535,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::loop:
 		{
 			value_type type = safe_read_buffer<value_type>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("loop\n");
+#endif
 			stackBlockTypeAddr.push_back(std::make_pair(type, m_pexecPlaneCur));
 			stackVecFixupsRelative.push_back(std::vector<int32_t*>());
 			stackVecFixupsAbsolute.push_back(std::vector<void**>());
@@ -1536,7 +1548,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::IF:
 		{
 			value_type type = safe_read_buffer<value_type>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("if\n");
+#endif
 			stackBlockTypeAddr.push_back(std::make_pair(type, nullptr));	// nullptr means we need to fixup addrs
 			stackVecFixupsRelative.push_back(std::vector<int32_t*>());
 			stackVecFixupsAbsolute.push_back(std::vector<void**>());
@@ -1547,7 +1561,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 
 		case opcode::ELSE:
 		{
+#ifdef PRINT_DISASSEMBLY
 			printf("ELSE\n");
+#endif
 			Verify(stackVecFixupsRelative.back().size() > 0);
 			LeaveBlock(true);
 			int32_t *prel32End = Jump(nullptr);	// if we got here its from the IF block above so jump to the end
@@ -1566,7 +1582,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::br:
 		{
 			uint32_t depth = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("br %u\n", depth);
+#endif
 			Verify(depth < stackBlockTypeAddr.size());
 			auto &pairBlock = *(stackBlockTypeAddr.rbegin() + depth);
 
@@ -1587,7 +1605,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::br_if:
 		{
 			uint32_t depth = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("br_if %u\n", depth);
+#endif
 			Verify(depth < stackBlockTypeAddr.size());
 			auto &pairBlock = *(stackBlockTypeAddr.rbegin() + depth);
 
@@ -1609,14 +1629,18 @@ void JitWriter::CompileFn(uint32_t ifn)
 		}
 		case opcode::br_table:
 		{
+#ifdef PRINT_DISASSEMBLY
 			printf("br_table\n");
+#endif
 			BranchTableParse(&pop, &cb, stackBlockTypeAddr, stackVecFixupsRelative, stackVecFixupsAbsolute);
 			break;
 		}
 
 		case opcode::ret:
 		{
+#ifdef PRINT_DISASSEMBLY
 			printf("return\n");
+#endif
 			// add rsp, (cblock * 8)
 			static const uint8_t rgcode[] = { 0x48, 0x81, 0xC4 };
 			int32_t cbSub = numeric_cast<int32_t>(stackVecFixupsRelative.size() * 8);
@@ -1629,7 +1653,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::call:
 		{
 			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("call %d\n", idx);
+#endif
 			Verify(idx < m_cfn);
 			vecifnCompile.push_back(idx);
 			auto ptype = m_pctxt->m_vecfn_types.at(m_pctxt->m_vecfn_entries.at(idx)).get();
@@ -1638,7 +1664,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		}
 		case opcode::call_indirect:
 		{
+#ifdef PRINT_DISASSEMBLY
 			printf("call_indirect\n");
+#endif
 			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
 			safe_read_buffer<char>(&pop, &cb);	// reserved
 			auto ptype = m_pctxt->m_vecfn_types.at(idx).get();
@@ -1648,13 +1676,17 @@ void JitWriter::CompileFn(uint32_t ifn)
 
 		case opcode::drop:
 		{
+#ifdef PRINT_DISASSEMBLY
 			printf("drop\n");
+#endif
 			_PopContractStack();
 			break;
 		}
 		case opcode::select:
 		{
+#ifdef PRINT_DISASSEMBLY
 			printf("select\n");
+#endif
 			Select();
 			break;
 		}
@@ -1662,168 +1694,243 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::i32_const:
 		{
 			uint32_t val = safe_read_buffer<varint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.const %d\n", val);
+#endif
 			PushC32(val);
 			break;
 		}
 		case opcode::i64_const:
 		{
 			uint64_t val = safe_read_buffer<varint64>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.const %llu\n", val);
+#endif
 			PushC64(val);
 			break;
 		}
 		case opcode::f32_const:
 		{
 			float val = safe_read_buffer<float>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.const %f\n", (double)val);
+#endif
 			PushF32(val);
 			break;
 		}
 		case opcode::f64_const:
 		{
 			double val = safe_read_buffer<double>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.const %f\n", val);
+#endif
 			PushF64(val);
 			break;
 		}
 		case opcode::i32_eqz:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.eqz\n");
+#endif
 			Eqz32();
 			break;
 		case opcode::i32_eq:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.eq\n");
+#endif
 			Compare(CompareType::Equal, false /*fSigned*/, false /*f64*/);	// Note: signedness is irrelevant
 			break;
 		case opcode::i32_ne:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.ne\n");
+#endif
 			Compare(CompareType::NotEqual, false /*fSigned*/, false /*f64*/); // Note: signedness is irrelevant
 			break;
 		case opcode::i32_lt_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.lt_s\n");
+#endif
 			Compare(CompareType::LessThan, true /*fSigned*/, false /*f64*/);
 			break;
 		case opcode::i32_lt_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.lt_u\n");
+#endif
 			Compare(CompareType::LessThan, false /*fSigned*/, false /*f64*/);
 			break;
 		case opcode::i32_gt_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.gt_s\n");
+#endif
 			Compare(CompareType::GreaterThan, true /*fSigned*/, false /*f64*/);
 			break;
 		case opcode::i32_gt_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.gt_u\n");
+#endif
 			Compare(CompareType::GreaterThan, false /*fSigned*/, false /*f64*/);
 			break;
 		case opcode::i32_le_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32_le_s\n");
+#endif
 			Compare(CompareType::LessThanEqual, true /*fSigned*/, false /*f64*/);
 			break;
 		case opcode::i32_le_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32_le_u\n");
+#endif
 			Compare(CompareType::LessThanEqual, false /*fSigned*/, false /*f64*/);
 			break;
 		case opcode::i32_ge_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32_ge_s\n");
+#endif
 			Compare(CompareType::GreaterThanEqual, true /*fSigned*/, false /*f64*/);
 			break;
 		case opcode::i32_ge_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32_ge_u\n");
+#endif
 			Compare(CompareType::GreaterThanEqual, false /*fSigned*/, false /*f64*/);
 			break;
 
-
 		case opcode::i64_eqz:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.eqz\n");
+#endif
 			Eqz64();
 			break;
 		case opcode::i64_eq:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.eq\n");
+#endif
 			Compare(CompareType::Equal, false /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_ne:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.ne\n");
+#endif
 			Compare(CompareType::NotEqual, false /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_lt_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.lt_s\n");
+#endif
 			Compare(CompareType::LessThan, true /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_lt_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.lt_u\n");
+#endif
 			Compare(CompareType::LessThan, false /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_gt_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.gt_s\n");
+#endif
 			Compare(CompareType::GreaterThan, true /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_gt_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.gt_u\n");
+#endif
 			Compare(CompareType::GreaterThan, false /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_le_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.le_s\n");
+#endif
 			Compare(CompareType::LessThanEqual, true /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_le_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.le_u\n");
+#endif
 			Compare(CompareType::LessThanEqual, false /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_ge_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.ge_s\n");
+#endif
 			Compare(CompareType::GreaterThanEqual, true /*fSigned*/, true /*f64*/);
 			break;
 		case opcode::i64_ge_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.ge_u\n");
+#endif
 			Compare(CompareType::GreaterThanEqual, false /*fSigned*/, true /*f64*/);
 			break;
 
 		case opcode::f32_eq:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.eq\n");
+#endif
 			FloatCompare(CompareType::Equal);
 			break;
 		case opcode::f32_ne:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.ne\n");
+#endif
 			FloatCompare(CompareType::NotEqual);
 			break;
 		case opcode::f32_lt:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.lt\n");
+#endif
 			FloatCompare(CompareType::LessThan);
 			break;
 		case opcode::f32_gt:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.gt\n");
+#endif
 			FloatCompare(CompareType::GreaterThan);
 			break;
 		case opcode::f32_le:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.le\n");
+#endif
 			FloatCompare(CompareType::LessThanEqual);
 			break;
 		case opcode::f32_ge:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.ge\n");
+#endif
 			FloatCompare(CompareType::GreaterThanEqual);
 			break;
 
 		case opcode::f64_eq:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.eq\n");
+#endif
 			DoubleCompare(CompareType::Equal);
 			break;
 		case opcode::f64_ne:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.ne\n");
+#endif
 			DoubleCompare(CompareType::NotEqual);
 			break;
 		case opcode::f64_lt:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.lt\n");
+#endif
 			DoubleCompare(CompareType::LessThan);
 		case opcode::f64_gt:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.gt\n");
+#endif
 			DoubleCompare(CompareType::GreaterThan);
 			break;
 		case opcode::f64_le:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.le\n");
+#endif
 			DoubleCompare(CompareType::LessThanEqual);
 			break;
 		case opcode::f64_ge:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.ge\n");
+#endif
 			DoubleCompare(CompareType::GreaterThanEqual);
 			break;
 
@@ -1833,7 +1940,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.load $%X\n", offset);
+#endif
 			LoadMem(offset, false, 4, false);
 			break;
 		}
@@ -1842,7 +1951,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.load $%X\n", offset);
+#endif
 			LoadMem(offset, true, 8, false);
 			break;
 		}
@@ -1852,7 +1963,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i32_load8_u $%X\n", offset);
+#endif
 			LoadMem(offset, false, 1, false);
 			break;
 		}
@@ -1860,7 +1973,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i32_load8_s $%X\n", offset);
+#endif
 			LoadMem(offset, false, 1, true);
 			break;
 		}
@@ -1868,7 +1983,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i32_load16_s $%X\n", offset);
+#endif
 			LoadMem(offset, false, 2, true);
 			break;
 		}
@@ -1877,7 +1994,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.load $%X\n", offset);
+#endif
 			LoadMem(offset, true, 8, false);
 			break;
 		}
@@ -1886,7 +2005,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.load8_s $%X\n", offset);
+#endif
 			LoadMem(offset, true, 1, true);
 			break;
 		}
@@ -1896,7 +2017,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i64/32.load16_u $%X\n", offset);
+#endif
 			LoadMem(offset, false, 2, false);
 			break;
 		}
@@ -1905,7 +2028,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.load16_s $%X\n", offset);
+#endif
 			LoadMem(offset, true, 2, true);
 			break;
 		}
@@ -1914,7 +2039,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i64_load32_s $%X\n", offset);
+#endif
 			LoadMem(offset, true, 4, true);
 			break;
 		}
@@ -1922,7 +2049,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::get_local:
 		{
 			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("get_local $%X\n", idx);
+#endif
 			Verify(idx < clocals);
 			GetLocal(idx);
 			break;
@@ -1930,7 +2059,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::set_local:
 		{
 			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("set_local $%X\n", idx);
+#endif
 			Verify(idx < clocals);
 			SetLocal(idx, true /*fPop*/);
 			break;
@@ -1938,7 +2069,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::tee_local:
 		{
 			uint32_t idx = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("tee_local $%X\n", idx);
+#endif
 			Verify(idx < clocals);
 			SetLocal(idx, false /*fPop*/);
 			break;
@@ -1946,14 +2079,18 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::get_global:
 		{
 			uint32_t iglbl = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("get_global $%X\n", iglbl);
+#endif
 			GetGlobal(iglbl);
 			break;
 		}
 		case opcode::set_global:
 		{
 			uint32_t iglbl = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("set_global $%X\n", iglbl);
+#endif
 			SetGlobal(iglbl);
 			break;
 		}
@@ -1964,7 +2101,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.store $%X\n", offset);
+#endif
 			StoreMem(offset, 4);
 			break;
 		}
@@ -1974,7 +2113,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.store $%X\n", offset);
+#endif
 			StoreMem(offset, 8);
 			break;
 		}
@@ -1984,7 +2125,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.store16 $%X\n", offset);
+#endif
 			StoreMem(offset, 2);
 			break;
 		}
@@ -1994,178 +2137,266 @@ void JitWriter::CompileFn(uint32_t ifn)
 		{
 			uint32_t align = safe_read_buffer<varuint32>(&pop, &cb);	// NYI alignment
 			uint32_t offset = safe_read_buffer<varuint32>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.store8 $%X\n", offset);
+#endif
 			StoreMem(offset, 1);
 			break;
 		}
 
 		case opcode::i32_clz:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.clz");
+#endif
 			CountLeadingZeros(false /*f64*/);
 			break;
 		case opcode::i32_ctz:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.ctz\n");
+#endif
 			CountTrailingZeros(false /*f64*/);
 			break;
 		case opcode::i32_popcnt:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.popcnt\n");
+#endif
 			Popcnt32();
 			break;
 		case opcode::i32_add:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.add\n");
+#endif
 			Add32();
 			break;
 		case opcode::i32_sub:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.sub\n");
+#endif
 			Sub32();
 			break;
 		case opcode::i32_mul:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.mul\n");
+#endif
 			Mul32();
 			break;
 		case opcode::i32_div_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.div_s\n");
+#endif
 			Div(true /*fSigned*/, false /*fModulo*/, false /*f64*/);
 			break;
 		case opcode::i32_div_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.div_u\n");
+#endif
 			Div(false /*fSigned*/, false /*fModulo*/, false /*f64*/);
 			break;
 		case opcode::i32_rem_s:
+#ifdef PRINT_DISASSEMBLY
+			printf("i32.rem_s\n");
+#endif
 			Div(true /*fSigned*/, true /*fModulo*/, false /*f64*/);
 			break;
 		case opcode::i32_rem_u:
+#ifdef PRINT_DISASSEMBLY
+			printf("i32.rem_u\n");
+#endif
 			Div(false /*fSigned*/, true /*fModulo*/, false /*f64*/);
 			break;
 		case opcode::i32_and:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.and\n");
+#endif
 			LogicOp(LogicOperation::And);
 			break;
 		case opcode::i32_or:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.or\n");
+#endif
 			LogicOp(LogicOperation::Or);
 			break;
 		case opcode::i32_xor:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.xor\n");
+#endif
 			LogicOp(LogicOperation::Xor);
 			break;
 		case opcode::i32_shl:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.shl\n");
+#endif
 			LogicOp(LogicOperation::ShiftLeft);
 			break;
 		case opcode::i32_shr_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.shr_s\n");
+#endif
 			LogicOp(LogicOperation::ShiftRight);
 			break;
 		case opcode::i32_shr_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.shr_u\n");
+#endif
 			LogicOp(LogicOperation::ShiftRightUnsigned);
 			break;
 		case opcode::i32_rotl:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.rotl\n");
+#endif
 			LogicOp(LogicOperation::RotateLeft);
 			break;
 		case opcode::i32_rotr:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.rotr\n");
+#endif
 			LogicOp(LogicOperation::RotateRight);
 			break;
 
 		case opcode::i64_clz:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.clz\n");
+#endif
 			CountLeadingZeros(true /*f64*/);
 			break;
 		case opcode::i64_ctz:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.ctz\n");
+#endif
 			CountTrailingZeros(true /*f64*/);
 			break;
 		case opcode::i64_popcnt:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.popcnt\n");
+#endif
 			Popcnt64();
 			break;
 		case opcode::i64_add:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.add\n");
+#endif
 			Add64();
 			break;
 		case opcode::i64_sub:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.sub\n");
+#endif
 			Sub64();
 			break;
 		case opcode::i64_mul:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.mul\n");
+#endif
 			Mul64();
 			break;
 		case opcode::i64_div_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.div_s\n");
+#endif
 			Div(true /*fSigned*/, false /*fModulo*/, true /*f64*/);
 			break;
 		case opcode::i64_div_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.div_u\n");
+#endif
 			Div(false /*fSigned*/, false /*fModulo*/, true /*f64*/);
 			break;
 		case opcode::i64_rem_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.rem_s\n");
+#endif
 			Div(true /*fSigned*/, true /*fModulo*/, true /*f64*/);
 			break;
 		case opcode::i64_rem_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.rem_u\n");
+#endif
 			Div(false /*fSigned*/, true /*fModulo*/, true /*f64*/);
 			break;
 		case opcode::i64_and:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.and\n");
+#endif
 			LogicOp64(LogicOperation::And);
 			break;
 		case opcode::i64_or:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.or\n");
+#endif
 			LogicOp64(LogicOperation::Or);
 			break;
 		case opcode::i64_xor:
+#ifdef PRINT_DISASSEMBLY
 			printf("ix64.xor\n");
+#endif
 			LogicOp64(LogicOperation::Xor);
 			break;
 		case opcode::i64_shl:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.shl\n");
+#endif
 			LogicOp64(LogicOperation::ShiftLeft);
 			break;
 		case opcode::i64_shr_s:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.shr_s\n");
+#endif
 			LogicOp64(LogicOperation::ShiftRight);
 			break;
 		case opcode::i64_shr_u:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.shr_u\n");
+#endif
 			LogicOp64(LogicOperation::ShiftRightUnsigned);
 			break;
 		case opcode::i64_rotl:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.rotl\n");
+#endif
 			LogicOp64(LogicOperation::RotateLeft);
 			break;
 		case opcode::i64_rotr:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.rotr\n");
+#endif
 			LogicOp64(LogicOperation::RotateRight);
 			break;
 
 		case opcode::f32_neg:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.neg\n");
+#endif
 			FloatNeg(false /*fDouble*/);
 			break;
 		case opcode::f32_add:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.add\n");
+#endif
 			FloatArithmetic(ArithmeticOperation::Add, false /*fDouble*/);
 			break;
 		case opcode::f32_sub:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.sub\n");
+#endif
 			FloatArithmetic(ArithmeticOperation::Sub, false /*fDouble*/);
 			break;
 		case opcode::f32_mul:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.mul\n");
+#endif
 			FloatArithmetic(ArithmeticOperation::Multiply, false /*fDouble*/);
 			break;
 		case opcode::f32_div:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.div\n");
+#endif
 			FloatArithmetic(ArithmeticOperation::Divide, false /*fDouble*/);
 			break;
 		case opcode::f32_copysign:
 			Ud2();	// doesn't work
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.copysign\n");
+#endif
 			// and eax, 8000'0000h
 			// xor [rdi - 8], eax
 			SafePushCode("\x25\x00\x00\x00\x80\x31\x47\xF8", 8);
@@ -2173,27 +2404,39 @@ void JitWriter::CompileFn(uint32_t ifn)
 			break;
 
 		case opcode::f64_neg:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.neg\n");
+#endif
 			FloatNeg(true /*fDouble*/);
 			break;
 		case opcode::f64_add:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.add\n");
+#endif
 			FloatArithmetic(ArithmeticOperation::Add, true /*fDouble*/);
 			break;
 		case opcode::f64_sub:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.sub\n");
+#endif
 			FloatArithmetic(ArithmeticOperation::Sub, true /*fDouble*/);
 			break;
 		case opcode::f64_mul:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.mul\n");
+#endif
 			FloatArithmetic(ArithmeticOperation::Multiply, true /*fDouble*/);
 			break;
 		case opcode::f64_div:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.div\n");
+#endif
 			FloatArithmetic(ArithmeticOperation::Divide, true /*fDouble*/);
 			break;
 		case opcode::f64_copysign:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.copysign\n");
+#endif
 			Ud2();	// doesn't work
 			// mov rcx, 0x8000000000000000
 			// and rax, rcx
@@ -2209,82 +2452,122 @@ void JitWriter::CompileFn(uint32_t ifn)
 			break;
 		}
 		case opcode::i32_trunc_s_f32:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.trunc_s/f32\n");
+#endif
 			Convert(value_type::i32, value_type::f32, true /*fSigned*/);
 			break;
 		case opcode::i32_trunc_u_f32:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.trunc_u/f32\n");
+#endif
 			Convert(value_type::i32, value_type::f32, false /*fSigned*/);
 			break;
 		case opcode::i32_trunc_s_f64:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.trunc_s/f64\n");
+#endif
 			Convert(value_type::i32, value_type::f64, true /*fSigned*/);
 			break;
 		case opcode::i32_trunc_u_f64:
+#ifdef PRINT_DISASSEMBLY
 			printf("i32.trunc_u/f64\n");
+#endif
 			Convert(value_type::i32, value_type::f64, false /*fSigned*/);
 			break;
 		case opcode::i64_trunc_s_f32:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.trunc_s/f32\n");
+#endif
 			Convert(value_type::i64, value_type::f32, true /*fSigned*/);
 			break;
 		case opcode::i64_trunc_u_f32:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.trunc_u/f32");
+#endif
 			Convert(value_type::i64, value_type::f32, false /*fSigned*/);
 			break;
 		case opcode::i64_trunc_s_f64:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.trunc_s/f64\n");
+#endif
 			Convert(value_type::i64, value_type::f64, true /*fSigned*/);
 			break;
 		case opcode::i64_trunc_u_f64:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.trunc_u/f64\n");
+#endif
 			Convert(value_type::i64, value_type::f64, false /*fSigned*/);
 			break;
 		case opcode::i64_extend_s_i32:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.extend_s_i32\n");
+#endif
 			ExtendSigned32_64();
 			break;
 		case opcode::i64_extend_u_i32:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.extend_u/i32\n");
+#endif
 			break;	// NOP because the upper register should be zero regardless
 		case opcode::f32_convert_s_i32:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.convert_s/i32\n");
+#endif
 			Convert(value_type::f32, value_type::i32, true /*fSigned*/);
 			break;
 		case opcode::f32_convert_u_i32:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.convert_u/i32\n");
+#endif
 			Convert(value_type::f32, value_type::i32, false /*fSigned*/);
 			break;
 		case opcode::f32_convert_s_i64:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.convert_s/i64\n");
+#endif
 			Convert(value_type::f32, value_type::i64, true /*fSigned*/);
 			break;
 		case opcode::f32_convert_u_i64:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.convert_u/i64\n");
+#endif
 			Convert(value_type::f32, value_type::i64, false /*fSigned*/);
 			break;
 		case opcode::f64_convert_s_i32:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.convert_s/i32\n");
+#endif
 			Convert(value_type::f64, value_type::i32, true /*fSigned*/);
 			break;
 		case opcode::f64_convert_u_i32:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.convert_u/i32\n");
+#endif
 			Convert(value_type::f64, value_type::i32, false /*fSigned*/);
 			break;
 		case opcode::f64_convert_s_i64:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.convert_s/i64\n");
+#endif
 			Convert(value_type::f64, value_type::i64, true /*fSigned*/);
 			break;
 		case opcode::f64_convert_u_i64:
+#ifdef PRINT_DISASSEMBLY
 			printf("i64.convert_u/i64\n");
+#endif
 			Convert(value_type::f64, value_type::i64, false /*fSigned*/);
 			break;
 		case opcode::f64_promote_f32:
+#ifdef PRINT_DISASSEMBLY
 			printf("f64.promote/f32\n");
+#endif
 			Convert(value_type::f64, value_type::f32, true);
 			break;
 		case opcode::f32_demote_f64:
+#ifdef PRINT_DISASSEMBLY
 			printf("f32.demote/f64\n");
+#endif
 			Convert(value_type::f32, value_type::f64, true);
 			break;
 
@@ -2295,7 +2578,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 			break; //nop
 
 		case opcode::end:
+#ifdef PRINT_DISASSEMBLY
 			printf("end\n");
+#endif
 			if (stackBlockTypeAddr.size() > 1)
 			{
 				LeaveBlock(stackBlockTypeAddr.back().first != value_type::empty_block);	// don't "leave" the function
@@ -2323,7 +2608,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::current_memory:
 		{
 			uint8_t reserved = safe_read_buffer<uint8_t>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("current_memory\n");
+#endif
 			PushC32(0);						// re-use grow_memory, just give a delta of 0
 			CallAsmOp(m_pfnGrowMemoryOp);
 			break;
@@ -2331,7 +2618,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 		case opcode::grow_memory:
 		{
 			uint8_t reserved = safe_read_buffer<uint8_t>(&pop, &cb);
+#ifdef PRINT_DISASSEMBLY
 			printf("grow_memory\n");
+#endif
 			CallAsmOp(m_pfnGrowMemoryOp);
 			break;
 		}
@@ -2351,7 +2640,9 @@ void JitWriter::CompileFn(uint32_t ifn)
 			CompileFn(ifnCompile);
 		}
 	}
+#ifdef PRINT_DISASSEMBLY
 	printf("\n\n");
+#endif
 }
 
 extern "C" uint64_t ExternCallFnASM(ExecutionControlBlock *pctl);
